@@ -1,0 +1,89 @@
+name: GhostDirector daily production
+
+on:
+  schedule:
+    # 06:00 UTC = 08:00 Africa/Harare (UTC+2, no daylight saving).
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}   # manual "Run workflow" button for tests
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-production
+  cancel-in-progress: false
+
+jobs:
+  produce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ffmpeg
+        run: sudo apt-get update -y && sudo apt-get install -y ffmpeg
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Restore production state (DB, no-repeat ledger)
+        uses: actions/cache@v4
+        with:
+          path: output/state
+          key: gd-state-v1
+
+      - name: Restore state files into live paths
+        run: |
+          mkdir -p db
+          cp -f output/state/trending_news.json db/ 2>/dev/null || true
+          cp -f output/state/ghostdirector.db output/ 2>/dev/null || true
+
+      - name: Write secrets
+        run: |
+          mkdir -p output/state
+          printf '%s' "${{ secrets.GD_ENV }}" > .env
+          printf '%s' "${{ secrets.GD_CLIENT_SECRETS }}" > client_secrets.json
+          printf '%s' "${{ secrets.GD_YOUTUBE_TOKEN }}" > youtube_token.famefiles.json
+
+      - name: Run daily production (short + long-form, UNLISTED)
+        run: |
+          python main.py --daily 2>&1 | tee output/_daily.log
+          exit ${PIPESTATUS[0]}
+
+      - name: Snapshot state for the next run
+        if: always()
+        run: |
+          # The no-repeat ledger (db/trending_news.json) + SQLite DB
+          # (output/ghostdirector.db) decide story freshness and daily
+          # idempotency; keep both across runs.
+          mkdir -p output/state
+          cp -f db/trending_news.json output/state/ 2>/dev/null || true
+          cp -f output/ghostdirector.db output/state/ 2>/dev/null || true
+
+      - name: Upload production artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}
+          path: |
+            output/_daily.log
+            output/**/metadata.json
+            output/**/final_qc_report.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## Daily production — $(date -u +%F)"
+            echo '```'
+            grep -aE "Uploaded to|Upload skipped|Error|FAILED|COMPLETE|Quality gate" output/_daily.log | tail -20 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
