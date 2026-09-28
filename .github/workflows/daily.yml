@@ -54,8 +54,19 @@ jobs:
 
       - name: Run daily production (short + long-form, UNLISTED)
         run: |
-          python main.py --daily 2>&1 | tee output/_daily.log
-          exit ${PIPESTATUS[0]}
+          # Gemini throws transient 503/429 "high demand" spikes; the whole
+          # candidate chain can 503 at once. An unattended factory RETRIES
+          # the full daily cycle instead of losing the day (the daily gate
+          # makes each attempt idempotent / reclaimable).
+          for attempt in 1 2 3; do
+            echo "== Attempt $attempt at $(date -u +%H:%M) UTC =="
+            python main.py --daily 2>&1 | tee output/_daily.log
+            code=${PIPESTATUS[0]}
+            if [ "$code" -eq 0 ]; then exit 0; fi
+            echo "Attempt $attempt failed (exit $code) - cooling down 10 min"
+            sleep 600
+          done
+          exit 1
 
       - name: Snapshot state for the next run
         if: always()
