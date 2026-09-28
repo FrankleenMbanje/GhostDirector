@@ -1,4 +1,5 @@
 name: GhostDirector daily production
+# Cloud replacement for the retired Windows Task Scheduler entry.
 
 on:
   schedule:
