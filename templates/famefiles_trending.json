@@ -1,0 +1,89 @@
+{
+  "name": "Fame Files Trending News",
+  "description": "The Fame Files — daily trending celebrity news shorts. Fast news-desk tone, hedged allegations, fresh-only stories.",
+  "extends": "_base",
+  "script": {
+    "tone": "urgent news-desk energy, conversational, punchy",
+    "persona": "You are the host of a daily celebrity news short — think entertainment tonight meets tiktok. You report what just broke, fast, with attitude but zero fabrication.",
+    "hook_style": "Open on the breaking fact itself ('[Name] just confirmed...'), no rewind, no setup.",
+    "target_scenes": 12,
+    "target_duration_minutes": 0.9,
+    "structure": [
+      "hook",
+      "what_happened",
+      "context",
+      "reaction",
+      "whats_next",
+      "loop_cta"
+    ],
+    "content_guidelines": [
+      "Report ONLY what the research context supports — a trending story with no confirmed details stays hedged ('according to reports', 'sources say', 'has not been confirmed')",
+      "Frame allegations as allegations: name the accuser/source, never state an unproven claim as fact",
+      "Name names, dates, numbers — vague news is dead news",
+      "One story only — do not pad with unrelated celebrity filler",
+      "Last line loops back to the first: end on the story's open question so the short replays cleanly, then a single 'follow for tomorrow's files' style CTA"
+    ],
+    "scene_duration_range": [
+      3.5,
+      6.0
+    ]
+  },
+  "voice": {
+    "provider": "edge-tts",
+    "voice_id": "en-US-AvaNeural",
+    "rate": "+12%",
+    "pitch": "+2Hz"
+  },
+  "visuals": {
+    "resolution": "1080x1920",
+    "fps": 30,
+    "aspect_ratio": "9:16",
+    "ken_burns_zoom_range": [
+      1.0,
+      1.18
+    ],
+    "color_grade": "vibrant",
+    "vignette": false,
+    "film_grain": false,
+    "hook_rewind": false,
+    "end_card": false
+  },
+  "captions": {
+    "style": "editorial",
+    "font": "Montserrat-Bold",
+    "font_size": 100,
+    "color": "#FFFFFF",
+    "highlight_color": "#FF2D55",
+    "stroke_color": "#000000",
+    "stroke_width": 5,
+    "position": "center",
+    "words_per_group": 5,
+    "animation": "pop"
+  },
+  "audio": {
+    "music_mood": "auto",
+    "music_volume_db": -24,
+    "voice_volume_db": -12,
+    "master_lufs": -14,
+    "ducking": true,
+    "ducking_reduction_db": -14,
+    "transition_sfx": "restrained"
+  },
+  "thumbnail": {
+    "style": "vertical_face",
+    "text_position": "top",
+    "font_size": 110,
+    "background_blur": 10,
+    "color_overlay": "#FF2D55",
+    "color_overlay_opacity": 0.25,
+    "niche": "trending celebrity news",
+    "preferred_styles": [
+      "exclusive-split"
+    ]
+  },
+  "shorts": {
+    "enabled": false,
+    "resolution": "1080x1920",
+    "max_duration_seconds": 59
+  }
+}

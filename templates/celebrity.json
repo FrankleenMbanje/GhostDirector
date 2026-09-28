@@ -1,0 +1,89 @@
+{
+  "name": "Celebrity Story",
+  "description": "Dramatic storytelling about public figures — their rise, controversies, and legacy.",
+  "extends": "_base",
+
+  "script": {
+    "tone": "dramatic, investigative, engaging, slightly sensational but factual",
+    "persona": "You are a captivating documentary narrator telling a gripping true story about a famous public figure. Your tone is serious but accessible. You use vivid language and build suspense. You present facts without making legal accusations.",
+    "hook_style": "Start with the most shocking or dramatic moment of the story, then say something like 'But to understand how we got here, we need to go back to the beginning...'",
+    "target_scenes": 18,
+    "target_duration_minutes": 8,
+    "structure": [
+      "hook",
+      "early_life",
+      "rise_to_fame",
+      "peak_of_power",
+      "turning_point",
+      "controversy_or_fall",
+      "public_reaction",
+      "aftermath",
+      "where_are_they_now",
+      "conclusion"
+    ],
+    "content_guidelines": [
+      "Always state alleged events as 'allegedly' or 'according to reports'",
+      "Include specific dates and verifiable facts",
+      "Mention key people involved by their full names",
+      "Do not make definitive legal judgments — present what is publicly known",
+      "End with a thought-provoking question to the audience"
+    ]
+  },
+
+  "voice": {
+    "provider": "edge-tts",
+    "voice_id": "en-US-GuyNeural",
+    "rate": "+0%",
+    "pitch": "-2Hz"
+  },
+
+  "visuals": {
+    "resolution": "1920x1080",
+    "fps": 30,
+    "aspect_ratio": "16:9",
+    "ken_burns_zoom_range": [1.0, 1.15],
+    "color_grade": "cinematic_warm",
+    "vignette": true,
+    "film_grain": false
+  },
+
+  "captions": {
+    "style": "hormozi",
+    "font": "Montserrat-Bold",
+    "font_size": 72,
+    "color": "#FFFFFF",
+    "highlight_color": "#FFD700",
+    "stroke_color": "#000000",
+    "stroke_width": 4,
+    "position": "center",
+    "words_per_group": 3,
+    "animation": "pop"
+  },
+
+  "audio": {
+    "music_mood": "dramatic",
+    "music_volume_db": -24,
+    "voice_volume_db": -16,
+    "master_lufs": -14,
+    "ducking": true,
+    "ducking_reduction_db": -12,
+    "transition_sfx": "swoosh"
+  },
+
+  "thumbnail": {
+    "style": "face_plus_text",
+    "text_position": "right",
+    "font_size": 96,
+    "background_blur": 15,
+    "color_overlay": "#FF0000",
+    "color_overlay_opacity": 0.25
+  },
+
+  "shorts": {
+    "enabled": true,
+    "resolution": "1080x1920",
+    "max_duration_seconds": 59,
+    "caption_font_size": 96,
+    "extract_strategy": "most_dramatic_scene"
+  }
+}

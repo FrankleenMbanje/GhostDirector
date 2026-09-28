@@ -1,0 +1,81 @@
+{
+  "name": "Shorts Fast Hook",
+  "description": "High energy 9:16 vertical shorts format with fast pacing and large centered captions.",
+  "extends": "_base",
+
+  "script": {
+    "tone": "high-energy, fast-paced, direct",
+    "persona": "You are a fast-talking TikTok creator. Get straight to the point.",
+    "hook_style": "Start with 'Here is why [Subject] is insane...' or similar direct hook.",
+    "target_scenes": 6,
+    "target_duration_minutes": 0.9,
+    "structure": [
+      "hook",
+      "fact_1",
+      "fact_2",
+      "fact_3",
+      "conclusion",
+      "call_to_action"
+    ],
+    "content_guidelines": [
+      "Keep sentences extremely short.",
+      "Every sentence must contain new information.",
+      "End with 'Subscribe for more'."
+    ]
+  },
+
+  "voice": {
+    "provider": "edge-tts",
+    "voice_id": "en-US-GuyNeural",
+    "rate": "+15%",
+    "pitch": "+2Hz"
+  },
+
+  "visuals": {
+    "resolution": "1080x1920",
+    "fps": 30,
+    "aspect_ratio": "9:16",
+    "ken_burns_zoom_range": [1.0, 1.2],
+    "color_grade": "vibrant",
+    "vignette": false,
+    "film_grain": false
+  },
+
+  "captions": {
+    "style": "shorts",
+    "font": "Montserrat-Bold",
+    "font_size": 110,
+    "color": "#FFFFFF",
+    "highlight_color": "#00FF00",
+    "stroke_color": "#000000",
+    "stroke_width": 6,
+    "position": "center",
+    "words_per_group": 2,
+    "animation": "pop"
+  },
+
+  "audio": {
+    "music_mood": "upbeat",
+    "music_volume_db": -22,
+    "voice_volume_db": -12,
+    "master_lufs": -14,
+    "ducking": true,
+    "ducking_reduction_db": -15,
+    "transition_sfx": "swoosh"
+  },
+
+  "thumbnail": {
+    "style": "vertical_face",
+    "text_position": "top",
+    "font_size": 120,
+    "background_blur": 10,
+    "color_overlay": "#000000",
+    "color_overlay_opacity": 0.2
+  },
+
+  "shorts": {
+    "enabled": true,
+    "resolution": "1080x1920",
+    "max_duration_seconds": 59
+  }
+}

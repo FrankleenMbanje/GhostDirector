@@ -1,0 +1,80 @@
+{
+  "name": "Documentary",
+  "description": "Cinematic, slow, deep documentary style.",
+  "extends": "_base",
+
+  "script": {
+    "tone": "serious, cinematic, educational, deep",
+    "persona": "You are a professional PBS documentary narrator. Your tone is serious, authoritative, and deeply engaging.",
+    "hook_style": "Start with a sweeping, philosophical statement or a startling fact.",
+    "target_scenes": 20,
+    "target_duration_minutes": 10,
+    "structure": [
+      "hook",
+      "historical_context",
+      "main_narrative",
+      "expert_perspective",
+      "climax",
+      "legacy",
+      "conclusion"
+    ],
+    "content_guidelines": [
+      "Use sophisticated vocabulary.",
+      "Focus on historical accuracy and impact.",
+      "Maintain a steady, measured pace."
+    ]
+  },
+
+  "voice": {
+    "provider": "edge-tts",
+    "voice_id": "en-GB-RyanNeural",
+    "rate": "-10%",
+    "pitch": "-5Hz"
+  },
+
+  "visuals": {
+    "resolution": "1920x1080",
+    "fps": 24,
+    "aspect_ratio": "16:9",
+    "ken_burns_zoom_range": [1.0, 1.05],
+    "color_grade": "cinematic_cool",
+    "vignette": true,
+    "film_grain": true
+  },
+
+  "captions": {
+    "style": "documentary",
+    "font": "Arial",
+    "font_size": 48,
+    "color": "#E0E0E0",
+    "highlight_color": "#FFFFFF",
+    "stroke_color": "#000000",
+    "stroke_width": 2,
+    "position": "bottom",
+    "words_per_group": 10,
+    "animation": "none"
+  },
+
+  "audio": {
+    "music_mood": "cinematic",
+    "music_volume_db": -26,
+    "voice_volume_db": -14,
+    "master_lufs": -14,
+    "ducking": true,
+    "ducking_reduction_db": -8,
+    "transition_sfx": "subtle_whoosh"
+  },
+
+  "thumbnail": {
+    "style": "cinematic",
+    "text_position": "center",
+    "font_size": 80,
+    "background_blur": 5,
+    "color_overlay": "#000000",
+    "color_overlay_opacity": 0.5
+  },
+
+  "shorts": {
+    "enabled": false
+  }
+}

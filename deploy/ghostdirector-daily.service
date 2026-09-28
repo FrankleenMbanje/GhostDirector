@@ -1,0 +1,19 @@
+# GhostDirector daily production (short + 8-min doc, both UNLISTED).
+# Fires 08:00 Africa/Harare = 06:00 UTC year-round (Harare has no DST).
+[Unit]
+Description=GhostDirector daily YouTube production (famefiles)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/ghostdirector
+ExecStart=/opt/ghostdirector/venv/bin/python main.py --daily
+# Keep every unattended run diagnosable (same convention as the Windows kit).
+StandardOutput=append:/opt/ghostdirector/output/_daily.log
+StandardError=append:/opt/ghostdirector/output/_daily.log
+TimeoutStartSec=4h
+
+[Install]
+WantedBy=multi-user.target

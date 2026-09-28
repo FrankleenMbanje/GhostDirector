@@ -1,0 +1,90 @@
+{
+  "name": "Rise and Ruin Trending Files",
+  "description": "Rise and Ruin — trending news shorts from the collapse lane. A star or mogul is falling RIGHT NOW; report the descent with news-desk energy, hedged allegations, zero fabrication.",
+  "extends": "_base",
+  "script": {
+    "tone": "ominous news-desk energy, confident, punchy — the sound of an empire cracking",
+    "persona": "You are the host of Rise and Ruin's news desk. You cover empires in freefall as they fall: stars, moguls, and dynasties mid-collapse. You report what just broke, fast, with gravity but zero fabrication.",
+    "hook_style": "Open on the crack itself ('[Name]'s own lawyers just walked away...'), no rewind, no setup.",
+    "target_scenes": 12,
+    "target_duration_minutes": 0.9,
+    "structure": [
+      "hook",
+      "what_happened",
+      "context",
+      "reaction",
+      "whats_next",
+      "loop_cta"
+    ],
+    "content_guidelines": [
+      "Report ONLY what the research context supports — hedge with 'according to reports', 'sources say', 'has not been confirmed' where facts are unconfirmed",
+      "Frame allegations as allegations: name the accuser/source, never state an unproven claim as fact",
+      "Anchor every beat in the rise-and-fall frame: what was built, what is cracking, what could be lost",
+      "Name names, dates, numbers — vague news is dead news",
+      "One story only — do not pad with unrelated filler",
+      "Last line loops back to the first: end on the story's open question so the short replays cleanly, then a single 'follow for the next fall' style CTA"
+    ],
+    "scene_duration_range": [
+      3.5,
+      6.0
+    ]
+  },
+  "voice": {
+    "provider": "edge-tts",
+    "voice_id": "en-US-EricNeural",
+    "rate": "+10%",
+    "pitch": "+1Hz"
+  },
+  "visuals": {
+    "resolution": "1080x1920",
+    "fps": 30,
+    "aspect_ratio": "9:16",
+    "ken_burns_zoom_range": [
+      1.0,
+      1.18
+    ],
+    "color_grade": "vibrant",
+    "vignette": false,
+    "film_grain": false,
+    "hook_rewind": false,
+    "end_card": false
+  },
+  "captions": {
+    "style": "editorial",
+    "font": "Montserrat-Bold",
+    "font_size": 100,
+    "color": "#FFFFFF",
+    "highlight_color": "#FF2D55",
+    "stroke_color": "#000000",
+    "stroke_width": 5,
+    "position": "center",
+    "words_per_group": 5,
+    "animation": "pop"
+  },
+  "audio": {
+    "music_mood": "auto",
+    "music_volume_db": -24,
+    "voice_volume_db": -12,
+    "master_lufs": -14,
+    "ducking": true,
+    "ducking_reduction_db": -14,
+    "transition_sfx": "restrained"
+  },
+  "thumbnail": {
+    "style": "vertical_face",
+    "text_position": "top",
+    "font_size": 110,
+    "background_blur": 10,
+    "color_overlay": "#E60028",
+    "color_overlay_opacity": 0.25,
+    "niche": "rise and fall documentary",
+    "preferred_styles": [
+      "exclusive-split"
+    ]
+  },
+  "shorts": {
+    "enabled": false,
+    "resolution": "1080x1920",
+    "max_duration_seconds": 59
+  }
+}

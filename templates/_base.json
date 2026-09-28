@@ -1,0 +1,89 @@
+{
+  "name": "Base Template",
+  "description": "Default settings inherited by all templates. Override any value in your niche template.",
+  "script": {
+    "tone": "engaging, informative, conversational",
+    "persona": "You are a captivating YouTube narrator telling a gripping true story.",
+    "hook_style": "Start with the most shocking moment, then rewind.",
+    "target_scenes": 12,
+    "target_duration_minutes": 6,
+    "structure": [
+      "hook",
+      "background",
+      "rising_action",
+      "climax",
+      "aftermath",
+      "conclusion"
+    ],
+    "content_guidelines": [
+      "Use contractions and casual language — sound human, not robotic",
+      "State allegations as 'allegedly' or 'according to reports'",
+      "Include specific dates and verifiable facts",
+      "End with a thought-provoking question"
+    ]
+  },
+  "voice": {
+    "provider": "edge-tts",
+    "voice_id": "en-US-GuyNeural",
+    "rate": "+0%",
+    "pitch": "+0Hz"
+  },
+  "voice_elevenlabs": {
+    "provider": "elevenlabs",
+    "voice_id": "",
+    "model": "eleven_monolingual_v1",
+    "stability": 0.5,
+    "similarity_boost": 0.75
+  },
+  "visuals": {
+    "resolution": "1920x1080",
+    "fps": 30,
+    "aspect_ratio": "16:9",
+    "ken_burns_zoom_range": [
+      1.04,
+      1.1
+    ],
+    "color_grade": "neutral",
+    "vignette": true,
+    "film_grain": false,
+    "hook_rewind": false,
+    "multi_cut_photos": true,
+    "end_card": false
+  },
+  "captions": {
+    "style": "hormozi",
+    "font": "Montserrat-Bold",
+    "font_size": 68,
+    "color": "#FFFFFF",
+    "highlight_color": "#FFD700",
+    "stroke_color": "#000000",
+    "stroke_width": 3,
+    "position": "center",
+    "words_per_group": 3,
+    "animation": "pop"
+  },
+  "audio": {
+    "music_mood": "dramatic",
+    "music_volume_db": -24,
+    "voice_volume_db": -16,
+    "master_lufs": -14,
+    "ducking": true,
+    "ducking_reduction_db": -12,
+    "transition_sfx": "swoosh"
+  },
+  "thumbnail": {
+    "style": "face_plus_text",
+    "text_position": "right",
+    "font_size": 96,
+    "background_blur": 0,
+    "color_overlay": "#CC0000",
+    "color_overlay_opacity": 0.3
+  },
+  "shorts": {
+    "enabled": false,
+    "resolution": "1080x1920",
+    "max_duration_seconds": 59,
+    "caption_font_size": 96,
+    "extract_strategy": "most_dramatic_scene"
+  }
+}

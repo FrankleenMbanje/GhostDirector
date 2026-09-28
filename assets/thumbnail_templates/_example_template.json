@@ -1,0 +1,25 @@
+{
+  "id": "my-gold-frame",
+  "name": "My Gold Frame",
+  "text_layout": "left_stack",
+  "accent": "yellow",
+  "bg_treatment": "gradient",
+  "palette": {
+    "accent": "#FFD700",
+    "text": "#FFFFFF"
+  },
+  "pair_with": "curiosity_gap",
+  "best_for": [
+    "documentary"
+  ],
+  "font": {
+    "size": 110,
+    "file": "Montserrat-Bold.ttf"
+  },
+  "overlay": {
+    "color": "#000000",
+    "max_alpha": 230,
+    "exponent": 1.4
+  },
+  "padding": 8
+}

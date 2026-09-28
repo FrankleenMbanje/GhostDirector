@@ -1,0 +1,14 @@
+# GhostDirector daily production timer.
+# 08:00 Africa/Harare = 06:00 UTC (Harare has no DST, so this is fixed).
+# Persistent=true: if the VM is off/rebooted at 08:00, the run fires late
+# rather than being skipped (same behavior as the old Windows task).
+[Unit]
+Description=Run GhostDirector daily production at 08:00 Harare (06:00 UTC)
+
+[Timer]
+OnCalendar=*-*-* 06:00:00 UTC
+Persistent=true
+RandomizedDelaySec=0
+
+[Install]
+WantedBy=timers.target

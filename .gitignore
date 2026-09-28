@@ -1,0 +1,54 @@
+# ── Secrets (never commit) ─────────────────────────
+.env
+.env.*
+!.env.example
+client_secrets.json
+youtube_token*.json
+*.pem
+*.key
+credentials*.json
+oauth*.json
+cookies*.txt
+
+# ── Generated media / project artifacts (never commit) ──
+output/
+!output/.gitkeep
+*.mp4
+*.mp3
+*.wav
+*.aac
+*.mkv
+!assets/test/**
+!assets/sfx/**
+!assets/fonts/**
+!assets/music/**
+*.mov
+*.jpg.tmp
+# music/sfx libraries are tracked source assets
+!assets/music/**/*.mp3
+!assets/music/**/*.wav
+!assets/sfx/**/*.mp3
+!assets/sfx/**/*.wav
+db/*.json
+db/analytics.db
+*.sqlite
+*.db
+
+# ── Python ────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+.pytest_cache/
+.mypy_cache/
+
+# ── Logs / OS / editor ────────────────────────────
+*.log
+logs/
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+.freebuff/
