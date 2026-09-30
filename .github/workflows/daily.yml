@@ -63,11 +63,32 @@ jobs:
           cp -f output/state/ghostdirector.db output/ 2>/dev/null || true
 
       - name: Write secrets
+        # FIX-072: secrets must reach the shell as ENV VARS, never as direct
+        # ${{ }} interpolation inside double quotes — the JSON's own " chars
+        # terminate the shell quoting and get stripped, writing
+        # {installed: {...}} (invalid) — the exact JSONDecodeError that
+        # killed the upload step in runs #1–#6. Env values bypass shell
+        # parsing entirely; "$VAR" expansion preserves them.
+        env:
+          GD_ENV: ${{ secrets.GD_ENV }}
+          GD_CLIENT_SECRETS: ${{ secrets.GD_CLIENT_SECRETS }}
+          GD_YOUTUBE_TOKEN: ${{ secrets.GD_YOUTUBE_TOKEN }}
         run: |
           mkdir -p output/state
-          printf '%s' "${{ secrets.GD_ENV }}" > .env
-          printf '%s' "${{ secrets.GD_CLIENT_SECRETS }}" > client_secrets.json
-          printf '%s' "${{ secrets.GD_YOUTUBE_TOKEN }}" > youtube_token.famefiles.json
+          printf '%s' "$GD_ENV" > .env
+          printf '%s' "$GD_CLIENT_SECRETS" > client_secrets.json
+          printf '%s' "$GD_YOUTUBE_TOKEN" > youtube_token.famefiles.json
+          # Fail fast here (not 40 min in, at upload) if anything is mangled.
+          python - <<'PY'
+          import json, pathlib
+          for name in ("client_secrets.json", "youtube_token.famefiles.json"):
+              json.loads(pathlib.Path(name).read_text(encoding="utf-8"))
+              print(f"{name}: valid JSON")
+          env = pathlib.Path(".env").read_text(encoding="utf-8")
+          keys = [l.split("=", 1)[0] for l in env.splitlines() if l.strip() and not l.startswith("#")]
+          assert keys, ".env is empty"
+          print(f".env: {len(keys)} keys")
+          PY
 
       - name: Run daily production (short + long-form, UNLISTED)
         run: |
