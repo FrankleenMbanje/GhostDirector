@@ -1,0 +1,27 @@
+name: Gemini reachability probe
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Call Gemini once from the runner
+        env:
+          GD_ENV: ${{ secrets.GD_ENV }}
+        run: |
+          KEY=$(printf '%s' "$GD_ENV" | grep -oP '(?<=^GEMINI_API_KEY=).*' | tr -d '\r')
+          for m in gemini-flash-lite-latest gemini-flash-latest; do
+            code=$(curl -s -o /tmp/resp.json -w "%{http_code}" \
+              -X POST "https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent" \
+              -H "Content-Type: application/json" \
+              -H "x-goog-api-key: ${KEY}" \
+              -d '{"contents":[{"parts":[{"text":"Say OK"}]}]}')
+            echo "$m -> HTTP $code"
+            head -c 200 /tmp/resp.json; echo
+          done
