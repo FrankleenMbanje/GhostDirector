@@ -33,6 +33,18 @@ jobs:
       - name: Install ffmpeg
         run: sudo apt-get update -y && sudo apt-get install -y ffmpeg
 
+      # FIX-071: xfade assembly holds every input's decoder + frame buffers
+      # open; even bounded passes pushed the 7 GB runner into swap-less OOM
+      # (run #5: pass 2 died silently, runner SIGTERM'd mid-render). A 4 GB
+      # swapfile turns thrash into slow-but-steady rendering.
+      - name: Add swap (OOM guard)
+        run: |
+          sudo fallocate -l 4G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
+
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip

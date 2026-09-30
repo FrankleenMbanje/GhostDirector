@@ -384,6 +384,11 @@ def _build_hook_card(script, template: dict, temp_dir: Path) -> Path | None:
     visuals_cfg = template.get("visuals", {})
     width = int(visuals_cfg.get("resolution", "1920x1080").split("x")[0])
     height = int(visuals_cfg.get("resolution", "1920x1080").split("x")[1])
+    # FIX-071: card_dur was never defined after the FIX-044 zoompan rework —
+    # every build silently skipped the hook card with "name 'card_dur' is
+    # not defined". 2.2 s per the design below (0.25 s fade-in handled by
+    # the card's own fade-out timing; narration starts under the card).
+    card_dur = 2.2
     font = config.FONTS_DIR / "Montserrat-Bold.ttf"
     if not font.exists():
         return None
@@ -1001,7 +1006,11 @@ def _prepare_video_cuts(
 # memory grows linearly with clip count — 44 simultaneous inputs OOM'd
 # ("Cannot allocate memory") on the 44-scene celebrity_8min doc. Chains
 # longer than this render in bounded passes joined by stream-copy concat.
-_MAX_FILTER_INPUTS = 16
+# FIX-071: 16 still OOM'd the GitHub runner (7 GB total, ~4.5 GB after the
+# torch-whisper import) — pass 2 of the Rundgren doc died silently and the
+# runner was SIGTERM'd. xfade graphs hold ~200-300 MB per 1080p input, so
+# 8 inputs keeps pass renders comfortably under the ceiling.
+_MAX_FILTER_INPUTS = 8
 
 
 def _assemble_with_transitions(
