@@ -12,6 +12,7 @@ import asyncio
 import statistics
 import time
 from datetime import datetime, date
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -397,7 +398,14 @@ Follow these rules religiously:
 def _load_llm_quarantine() -> dict:
     """Per-model daily-quota ledger: models that 429 with a DAILY exhaustion
     are skipped for the rest of the day instead of burning wall-clock in the
-    chain (free tier: ~20 req/day/model — one script run can burn that)."""
+    chain (free tier: ~20 req/day/model — one script run can burn that).
+
+    "Day" means GOOGLE'S quota day: the free-tier per-day bucket resets at
+    midnight PACIFIC (08:00 UTC in summer, 07:00 UTC in winter), so the
+    quarantine expires at that boundary — not at UTC midnight. Found live on
+    run #4 (2026-09-30): the 06:00 UTC cron fires an hour before the reset,
+    quarantined every model at 06:49 UTC, then attempts 2–3 (after the 07:00
+    UTC refill) skipped all models without a single API call."""
     p = Path("output/_llm_quota_quarantine.json")
     try:
         return json.loads(p.read_text(encoding="utf-8"))
@@ -413,11 +421,36 @@ def _quarantine_model(model_id: str) -> None:
     p.write_text(json.dumps(data, indent=1), encoding="utf-8")
 
 
+# Google free-tier per-day quota buckets reset at midnight PACIFIC, so a
+# quarantine earned at 23:50 Pacific lasts ~10 minutes, not a full UTC day.
+_QUOTA_TZ = ZoneInfo("America/Los_Angeles")
+
+
 def _is_quarantined_today(model_id: str) -> bool:
     ts = _load_llm_quarantine().get(model_id)
     if not ts:
         return False
-    return datetime.fromtimestamp(float(ts)).date() == date.today()
+    # Quarantine spans Google's quota day: from the 429 until the next
+    # midnight Pacific (when the per-day bucket refills).
+    q_day = datetime.fromtimestamp(float(ts), tz=_QUOTA_TZ).date()
+    return q_day == datetime.now(tz=_QUOTA_TZ).date()
+
+
+def _expire_stale_quarantines() -> None:
+    """Drop entries whose Pacific quota day has ended so the file can't poison
+    a fresh day (the step-9 retry loop reuses the same runner workspace)."""
+    p = Path("output/_llm_quota_quarantine.json")
+    data = _load_llm_quarantine()
+    today = datetime.now(tz=_QUOTA_TZ).date()
+    live = {
+        m: t for m, t in data.items()
+        if datetime.fromtimestamp(float(t), tz=_QUOTA_TZ).date() == today
+    }
+    if len(live) != len(data):
+        if live:
+            p.write_text(json.dumps(live, indent=1), encoding="utf-8")
+        else:
+            p.unlink(missing_ok=True)
 
 
 @retry(max_attempts=8, base_delay=20.0, exceptions=(Exception,))
@@ -430,7 +463,9 @@ async def _call_gemini(prompt: str) -> dict:
     # Walk the full verified chain: a pinned id can 404, exhaust its own
     # daily quota bucket, or 503 under load independently of the others
     # (all three observed live on 2026-09-18). Models that hit a DAILY 429
-    # are quarantined until midnight so later attempts skip them instantly.
+    # are quarantined until Google's quota day rolls over at midnight
+    # Pacific (07:00/08:00 UTC) so later attempts skip them instantly.
+    _expire_stale_quarantines()
     response = None
     last_err: Exception | None = None
     for model_id in config.gemini_candidates():

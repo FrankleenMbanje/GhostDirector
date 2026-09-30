@@ -3,8 +3,13 @@ name: GhostDirector daily production
 
 on:
   schedule:
-    # 06:00 UTC = 08:00 Africa/Harare (UTC+2, no daylight saving).
-    - cron: "0 6 * * *"
+    # 08:30 UTC = 10:30 Africa/Harare (UTC+2, no daylight saving).
+    # MUST stay after Google's free-tier daily reset at midnight Pacific
+    # (07:00 UTC PDT / 08:00 UTC PST) — the 06:00 UTC slot fired an hour
+    # BEFORE the reset and ran the previous day's empty bucket (run #4,
+    # 2026-09-30: every model 429'd, then the UTC-date quarantine kept
+    # attempts 2–3 dead even after the 07:00 UTC refill).
+    - cron: "30 8 * * *"
   workflow_dispatch: {}   # manual "Run workflow" button for tests
 
 permissions:

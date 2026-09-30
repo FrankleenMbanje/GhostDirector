@@ -358,6 +358,64 @@ check("dict flattening keeps every value",
 check("blank values never reach the prompt",
       _fact_text({"a": "", "b": "kept"}) == "kept")
 
+# ── 7.9 LLM daily-quota quarantine follows Google's PACIFIC quota day ─
+print("\n[7.9] quarantine expires at midnight Pacific (Google's quota day)")
+import os
+import time as _time
+from datetime import datetime, timezone
+from pipeline.scriptwriter import (  # noqa: E402
+    _load_llm_quarantine, _quarantine_model, _is_quarantined_today,
+    _expire_stale_quarantines, _QUOTA_TZ,
+)
+
+_qdir = tempfile.TemporaryDirectory()
+_cwd = os.getcwd()
+os.chdir(_qdir.name)
+try:
+    check("no quarantine file = no model skipped",
+          not _is_quarantined_today("gemini-flash-latest"))
+
+    # a fresh daily 429 quarantines the model for the rest of the quota day
+    _quarantine_model("gemini-flash-latest")
+    check("a fresh daily 429 quarantines the model",
+          _is_quarantined_today("gemini-flash-latest"))
+    check("quarantine is per-model — the rest of the chain stays up",
+          not _is_quarantined_today("gemini-flash-lite-latest"))
+
+    # REGRESSION (run #4, 2026-09-30): a 429 earned just before Pacific
+    # midnight must expire when the bucket refills, even though its UTC
+    # date is still "today". midnight_pt - 300 = 23:55 PT yesterday.
+    now_pt = datetime.now(tz=_QUOTA_TZ)
+    midnight_pt = datetime.combine(
+        now_pt.date(), datetime.min.time(), tzinfo=_QUOTA_TZ).timestamp()
+    ts_pre_midnight = midnight_pt - 300
+    p = Path("output/_llm_quota_quarantine.json")
+    p.write_text(json.dumps({"gemini-3.6-flash": ts_pre_midnight}), encoding="utf-8")
+    check("429 from 5 min before PT midnight is expired (bucket refilled)",
+          not _is_quarantined_today("gemini-3.6-flash"))
+    check("UTC-date logic would wrongly keep that 429 locked (the run #4 bug)",
+          datetime.fromtimestamp(ts_pre_midnight, tz=timezone.utc).date()
+          == datetime.now(tz=timezone.utc).date())
+    p.write_text(json.dumps({"gemini-3.6-flash": _time.time() - 25 * 3600}), encoding="utf-8")
+    check("a 429 earned 25 h ago never quarantines today",
+          not _is_quarantined_today("gemini-3.6-flash"))
+
+    # the pre-chain sweeper: keeps live entries, drops stale ones
+    p.write_text(json.dumps({
+        "gemini-flash-latest": _time.time(),          # live (today PT)
+        "gemini-3.6-flash": midnight_pt - 300,        # stale (yesterday PT)
+    }), encoding="utf-8")
+    _expire_stale_quarantines()
+    after = _load_llm_quarantine()
+    check("sweeper keeps live quarantines", "gemini-flash-latest" in after)
+    check("sweeper drops expired quarantines", "gemini-3.6-flash" not in after)
+
+    p.write_text(json.dumps({"gone": midnight_pt - 300}), encoding="utf-8")
+    _expire_stale_quarantines()
+    check("sweeper deletes the file when nothing is live", not p.exists())
+finally:
+    os.chdir(_cwd)
+
 print(f"\n{'='*50}\nRESULT: {sum(1 for _, ok, _ in RESULTS if ok)} passed, "
       f"{sum(1 for _, ok, _ in RESULTS if not ok)} failed")
 sys.exit(0 if all(ok for _, ok, _ in RESULTS) else 1)
