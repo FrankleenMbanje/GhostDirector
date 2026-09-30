@@ -73,8 +73,15 @@ GEMINI_LIVE_CANDIDATES: list[str] = []
 # Known-current flash ids that must ALWAYS be reachable in the runtime chain,
 # even if verify_gemini_models exits early (probe quota, network hiccup).
 # The chain walker + daily-quota quarantine in scriptwriter handle dead hops.
+# 2026-09-30: the 3 primaries + 4 probes below are all verified answering
+# JSON structured output on THIS key — free-tier quota is PER MODEL, so a
+# burned day on the primaries still leaves ~4×20 fresh calls for same-day
+# recovery runs (FIX-070 note: the Pacific reset refills everything at
+# 07:00/08:00 UTC anyway).
 _GEMINI_KNOWN_FLASH = [
     "gemini-3.6-flash", "gemini-flash-latest", "gemini-flash-lite-latest",
+    "gemini-3.5-flash", "gemini-3.5-flash-lite",
+    "gemini-3-flash-preview", "gemini-3.1-flash-lite",
 ]
 
 
