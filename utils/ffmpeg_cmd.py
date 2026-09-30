@@ -683,14 +683,19 @@ def mix_audio_with_music(
     if sfx_path and Path(sfx_path).exists():
         args.extend(["-i", str(sfx_path)])
         if ducking:
+            # FIX-069: [voice] is consumed THREE times here (music ducker,
+            # SFX ducker, final mix). A filter output label may be referenced
+            # only once; Frank's local Windows ffmpeg tolerates the reuse but
+            # the Linux runner's ffmpeg rejects it ("Invalid stream
+            # specifier: voice"). asplit fans the stream out explicitly.
             filter_str = (
-                f"[0:a]{voice_fx},volume={voice_volume_db}dB[voice];"
+                f"[0:a]{voice_fx},volume={voice_volume_db}dB,asplit=3[voice][voice2][voice3];"
                 f"[1:a]{music_fx}[music];"
-                f"[music][voice]sidechaincompress=threshold=0.05:ratio=10:attack=50:release=300[ducked_music];"
+                f"[music][voice2]sidechaincompress=threshold=0.05:ratio=10:attack=50:release=300[ducked_music];"
                 # SFX ducked under narration as well — a 3-4s whoosh played at
                 # fixed volume used to talk over the first words of a scene.
                 f"[2:a]volume={sfx_volume_db}dB[sfx_raw];"
-                f"[sfx_raw][voice]sidechaincompress=threshold=0.03:ratio=6:attack=20:release=250[sfx];"
+                f"[sfx_raw][voice3]sidechaincompress=threshold=0.03:ratio=6:attack=20:release=250[sfx];"
                 f"[voice][ducked_music][sfx]amix=inputs=3:duration=first:dropout_transition=2[out]"
             )
         else:
@@ -702,10 +707,11 @@ def mix_audio_with_music(
             )
     else:
         if ducking:
+            # FIX-069: [voice] consumed twice (ducker + mix) — asplit=2.
             filter_str = (
-                f"[0:a]{voice_fx},volume={voice_volume_db}dB[voice];"
+                f"[0:a]{voice_fx},volume={voice_volume_db}dB,asplit=2[voice][voice2];"
                 f"[1:a]{music_fx}[music];"
-                f"[music][voice]sidechaincompress=threshold=0.05:ratio=10:attack=50:release=300[ducked_music];"
+                f"[music][voice2]sidechaincompress=threshold=0.05:ratio=10:attack=50:release=300[ducked_music];"
                 f"[voice][ducked_music]amix=inputs=2:duration=first:dropout_transition=2[out]"
             )
         else:
