@@ -25,6 +25,9 @@ import config
 SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
     "https://www.googleapis.com/auth/youtube",
+    # 30-day performance reporting: impressions, CTR, retention via
+    # YouTube Analytics API (the verdict metrics for the daily-test era).
+    "https://www.googleapis.com/auth/yt-analytics.readonly",
 ]
 
 EXPECTED_CHANNEL = "UCkxIY_tv62QYMO5MOsBQp9w"  # The Fame Files
