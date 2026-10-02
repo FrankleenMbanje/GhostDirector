@@ -279,7 +279,7 @@ def generate_thumbnail(script: Script, template: dict, output_dir: Path) -> Path
     v3_img.save(str(v3_path), "PNG", quality=95)
 
     # ── A9: Style-library variants (user templates first, then curated) ──
-    # EXCLUSIVE kit: stash the CLEAN subject photo + a second face so the
+    # ── EXCLUSIVE kit: stash the CLEAN subject photo + a second face so the
     # exclusive_news painter builds its split from raw photos (the graded
     # bg has a baked-in gradient that poisons the right half).
     global _EXCLUSIVE_KIT
@@ -287,11 +287,7 @@ def generate_thumbnail(script: Script, template: dict, output_dir: Path) -> Path
     subject_idx = _pick_subject_scene(script)
     if subject_idx is not None and script.scenes[subject_idx].photo_path:
         _EXCLUSIVE_KIT["primary"] = script.scenes[subject_idx].photo_path
-    for scene in script.scenes:
-        if (scene.photo_path and Path(scene.photo_path).exists()
-                and scene.photo_path != _EXCLUSIVE_KIT.get("primary")):
-            _EXCLUSIVE_KIT["secondary"] = scene.photo_path
-            break
+    _EXCLUSIVE_KIT["secondary"] = _pick_secondary_face(script, subject_idx, output_dir)
 
     style_rows = render_style_variants(
         bg_image.copy(), power_words, font_size, width, height, output_dir,
@@ -790,6 +786,101 @@ def _layout_exclusive_news(img, words, font_size, width, height, style):
 
 
 _LAYOUTS["exclusive_news"] = _layout_exclusive_news   # registered after its def
+
+
+def _pick_secondary_face(script: Script, subject_idx: int | None,
+                         output_dir: Path | None = None) -> str | None:
+    """FIX-073: choose the split's RIGHT face deliberately, not blindly.
+
+    The old code took the first photo that wasn't the primary's — on a
+    two-name story ("Bruno Mars vs Drake") that let an unrelated red-lit
+    stage shot stand in for the second name and wreck the thumbnail.
+
+    Priority:
+      1. A scene whose people_to_show names the OTHER title tokens (the
+         second celebrity) — the same matching rule the primary uses.
+      2. Any scene photo that is NOT a Tier-4 gradient fallback (checked
+         against scenes/scene_fallback.json) and differs from the primary.
+      3. A scene photo that differs from the primary at all.
+    Returns a path or None (painter then mirrors the primary rather than
+    shipping a mismatched stranger).
+    """
+    scenes = list(getattr(script, "scenes", []) or [])
+    if not scenes:
+        return None
+
+    primary_path = None
+    if subject_idx is not None and 0 <= subject_idx < len(scenes):
+        primary_path = scenes[subject_idx].photo_path
+
+    subject = _subject_tokens(getattr(script, "title", "") or "")
+
+    # 1) the OTHER named person: among scenes whose people hit the title's
+    #    tokens, take the EARLIEST-MENTIONED one whose people don't overlap
+    #    the primary's ("Bruno Mars vs Drake: The War For Karol G" -> Drake,
+    #    not Karol G, who is merely mentioned later in the title).
+    title_lc = (getattr(script, "title", "") or "").lower()
+    positions = {w: i for i, w in enumerate(
+        w for w in re.findall(r"[A-Za-z]+", title_lc) if len(w) > 2)}
+
+    def _people_tokens(scene) -> set[str]:
+        return {w.lower()
+                for p in (scene.people_to_show or [])
+                for w in re.findall(r"[A-Za-z]+", p)
+                if len(w) > 2}
+
+    primary_people: set[str] = set()
+    if subject_idx is not None and 0 <= subject_idx < len(scenes):
+        primary_people = _people_tokens(scenes[subject_idx])
+
+    best: tuple[int, int, str] | None = None   # (token_pos, scene_idx, path)
+    if subject:
+        for i, scene in enumerate(scenes):
+            if i == subject_idx or not scene.photo_path:
+                continue
+            person_words = _people_tokens(scene)
+            if not person_words or (primary_people and person_words & primary_people):
+                continue
+            pos = min((positions[t] for t in person_words if t in positions),
+                      default=None)
+            if pos is None:
+                continue
+            if best is None or pos < best[0]:
+                best = (pos, i, scene.photo_path)
+    if best is not None:
+        return best[2]
+
+    secondary: str | None = None
+
+    # Fallback ledger: scene_no -> {"reason": ...} for Tier-4 gradients.
+    ledger: dict = {}
+    ledger_path = (Path(output_dir) / "scenes" / "scene_fallback.json") if output_dir else None
+    if ledger_path and ledger_path.exists():
+        try:
+            ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        except Exception:
+            ledger = {}
+
+    def _is_fallback(idx: int) -> bool:
+        # scenes are 1-numbered in the ledger (scene_1, scene_2, ...)
+        return str(idx + 1) in ledger
+
+    # 2) any non-fallback photo distinct from the primary
+    for i, scene in enumerate(scenes):
+        if i == subject_idx or not scene.photo_path or _is_fallback(i):
+            continue
+        if scene.photo_path != primary_path and Path(scene.photo_path).exists():
+            secondary = secondary or scene.photo_path
+            break
+
+    # 3) last resort: the primary's photo (painter mirrors it) — never a
+    #    fallback-marked scene, which would poison the right half again.
+    if secondary is None:
+        for i, scene in enumerate(scenes):
+            if i != subject_idx and scene.photo_path and not _is_fallback(i):
+                secondary = scene.photo_path
+                break
+    return secondary
 
 _BG_TREATMENTS = {
     "gradient": lambda im, w, h: Image.alpha_composite(

@@ -10,6 +10,7 @@ Covers (UPGRADE_PLAN.md §8 Phase 1):
 
 import sys
 import asyncio
+import json
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -182,6 +183,59 @@ check("overlay text used for power words", words == ["THE", "$200B", "FALL"], st
 
 thumb = generate_thumbnail(script3, template, out)
 check("thumbnail rendered", thumb is not None and thumb.exists())
+
+# FIX-073: exclusive-split secondary face is picked deliberately
+from pipeline.thumbnail import _pick_secondary_face
+_face_dir = out / "_faces"
+_face_dir.mkdir(exist_ok=True)
+
+def _face_file(name: str) -> str:
+    p = _face_dir / name
+    p.write_bytes(b"\xff\xd8\xff\xe0fakejpeg")   # exists on disk; content irrelevant
+    return str(p)
+
+sfx1 = make_scene(scene_number=1, visual_type="web_photo", people_to_show=["Bruno Mars"])
+sfx1.photo_path = _face_file("bruno.jpg")
+sfx_karol = make_scene(scene_number=2, visual_type="web_photo", people_to_show=["Karol G"])
+sfx_karol.photo_path = _face_file("karol.jpg")
+sfx_drake = make_scene(scene_number=3, visual_type="web_photo", people_to_show=["Drake"])
+sfx_drake.photo_path = _face_file("drake.jpg")
+vs_title = "Bruno Mars vs Drake: The War For Karol G"
+vs_script = Script(title=vs_title, description="", tags=[], hook="", scenes=[sfx1, sfx_karol, sfx_drake],
+                   total_scenes=3, estimated_duration_minutes=0.5)
+picked = _pick_secondary_face(vs_script, 0, out)
+check("FIX-073 secondary face = other named person (Drake, not Karol G)",
+      picked == sfx_drake.photo_path, f"picked={picked}")
+check("FIX-073 pick is order-independent",
+      _pick_secondary_face(Script(title=vs_title, description="", tags=[], hook="",
+                                  scenes=[sfx1, sfx_drake, sfx_karol],
+                                  total_scenes=3, estimated_duration_minutes=0.5), 0, out)
+      == sfx_drake.photo_path)
+check("FIX-073 falls back to other named person when second lead absent",
+      _pick_secondary_face(Script(title=vs_title, description="", tags=[], hook="",
+                                  scenes=[sfx1, sfx_karol],
+                                  total_scenes=2, estimated_duration_minutes=0.5), 0, out)
+      == sfx_karol.photo_path)
+# Tier-4 fallback ledger: a gradient scene must never become the split face
+(out / "scenes").mkdir(exist_ok=True)
+ledger = out / "scenes" / "scene_fallback.json"
+ledger.write_text(json.dumps({"2": {"reason": "tier4_gradient: all sources exhausted"}}), encoding="utf-8")
+solo = make_scene(scene_number=1, visual_type="web_photo", people_to_show=["Bruno Mars"])
+solo.photo_path = str(Path("assets/test/taj.jpg").resolve())
+sfb = make_scene(scene_number=2, visual_type="web_photo", people_to_show=[])
+sfb.photo_path = _face_file("fallback.jpg")
+sok = make_scene(scene_number=3, visual_type="web_photo", people_to_show=[])
+sok.photo_path = _face_file("ok.jpg")
+solo_script = Script(title="Solo Story About Bruno Mars", description="", tags=[], hook="",
+                     scenes=[solo, sfb, sok], total_scenes=3, estimated_duration_minutes=0.5)
+check("FIX-073 skips Tier-4 fallback scene for split face",
+      _pick_secondary_face(solo_script, 0, out) == sok.photo_path)
+ledger.write_text(json.dumps({"2": {"reason": "x"}, "3": {"reason": "y"}}), encoding="utf-8")
+check("FIX-073 returns None when every candidate is a fallback",
+      _pick_secondary_face(solo_script, 0, out) is None)
+ledger.write_text("{}", encoding="utf-8")
+check("FIX-073 still picks a face with empty ledger",
+      _pick_secondary_face(solo_script, 0, out) == sfb.photo_path)
 
 # ── 1.4 chapter titles ────────────────────────────────────────────────
 print("\n[1.4] Chapter titles from narration")
