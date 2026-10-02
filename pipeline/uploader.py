@@ -181,9 +181,10 @@ def _reassert_after_processing(youtube, video_id: str, privacy_status: str,
     a fresh re-upload of the same bytes processed in 60s); the duration
     stayed P0D and the operator could not review the video;
     (2) after the stuck sibling was deleted, the fresh copy briefly showed
-    `public` although it was uploaded `unlisted`. The operator's cardinal
-    rule is UNLISTED delivery until he publishes — so privacy is verified
-    and re-asserted on every poll, never trusted once."""
+    `public` although it was uploaded `unlisted`. The operator's standing
+    order (2026-10-02) is PUBLIC delivery — so privacy is verified and
+    re-asserted on every poll, never trusted once (drift in either
+    direction is corrected)."""
     import time as _time
     deadline = _time.time() + max_wait_s
     while _time.time() < deadline:
@@ -223,7 +224,7 @@ def upload_video(
     project_dir: Path,
     video_path: Path,
     thumbnail_path: Optional[Path] = None,
-    privacy_status: str = "private",
+    privacy_status: str = "public",
     channel: str | None = None,
     title_override: Optional[str] = None,
 ) -> str:

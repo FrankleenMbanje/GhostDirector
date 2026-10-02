@@ -3,8 +3,8 @@
 Verified against the live codebase. This file is the map; behavior lives in the modules.
 
 ## Entry points
-- `main.py` — click CLI. `python main.py "TOPIC" --template celebrity_8min [--shorts] [--auto] [--upload] [--privacy unlisted] [--channel famefiles]`; `--trending` (Fame Files daily short, auto-picks top story, uploads via `pipeline/trending_short.run_cli`); `--trending-list`; `--resume <dir>`; `--audit`, `--find-competitors`, `--sync-analytics`, `--ab-apply`, `--thumbnails`.
-- `pipeline/trending_short.py` — the Fame Files production lane: story pick → script → quality gate → **FIX-060 word-budget enforcement** → voices → assets → `assemble_video` → QC gate (with repair hook) → thumbnail/metadata/compliance → upload (privacy from CLI, default unlisted).
+- `main.py` — click CLI. `python main.py "TOPIC" --template celebrity_8min [--shorts] [--auto] [--upload] [--privacy public] [--channel famefiles]`; `--trending` (Fame Files daily short, auto-picks top story, uploads via `pipeline/trending_short.run_cli`); `--trending-list`; `--resume <dir>`; `--audit`, `--find-competitors`, `--sync-analytics`, `--ab-apply`, `--thumbnails`.
+- `pipeline/trending_short.py` — the Fame Files production lane: story pick → script → quality gate → **FIX-060 word-budget enforcement** → voices → assets → `assemble_video` → QC gate (with repair hook) → thumbnail/metadata/compliance → upload (privacy from CLI, default public — operator order 2026-10-02; QC + compliance gates remain the safety net).
 - `pipeline/shorts.py` — 9:16 companion slicing for long-form projects.
 
 ## Production flow (main.py)

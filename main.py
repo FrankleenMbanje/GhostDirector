@@ -108,7 +108,7 @@ async def run_pipeline(
     review: bool = False,
     auto: bool = False,
     upload: bool = False,
-    privacy: str = "private",
+    privacy: str = "public",
     force_upload: bool = False,
     push_resolve: bool = False,
     resolve_render: bool = False,
@@ -518,7 +518,7 @@ async def run_pipeline(
 @click.option("--push-resolve", is_flag=True, help="Push the edit into running DaVinci Resolve Studio after rendering")
 @click.option("--resolve-render", is_flag=True, help="With --push-resolve: also queue a YouTube-preset render from Resolve Studio")
 @click.option("--no-auto-resolve", is_flag=True, help="Disable auto-push when Resolve Studio is detected running")
-@click.option("--privacy", default="unlisted", type=click.Choice(["public", "private", "unlisted"]), help="YouTube video privacy status (default unlisted — operator publishes after review)")
+@click.option("--privacy", default="public", type=click.Choice(["public", "private", "unlisted"]), help="YouTube video privacy status (default public — operator order 2026-10-02; the QC + compliance gates still block bad renders)")
 @click.option("--channel", default="default", help="Channel profile: riseandruin | famefiles (per-channel persona/state/token files)")
 @click.option("--trending", "trending_flag", is_flag=True, help="The Fame Files: pick today's trending celebrity story, produce a 9:16 news short, upload (combine with --privacy / --no-upload)")
 @click.option("--trending-list", "trending_list", is_flag=True, help="The Fame Files: show today's top trending celebrity stories, then exit")

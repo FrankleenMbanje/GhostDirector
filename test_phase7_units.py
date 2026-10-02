@@ -518,6 +518,71 @@ _no_guy = [p.name for p in (Path(__file__).parent / "templates").glob("*.json")
            if "GuyNeural" in p.read_text(encoding="utf-8") or "EricNeural" in p.read_text(encoding="utf-8")]
 check("no News-class voices left in templates", _no_guy == [], str(_no_guy))
 
+# ── 7.12 daily slate + PUBLIC delivery (FIX-080) ─────────────────────
+print("\n[7.12] daily slate + public delivery (FIX-080)")
+import storage.scheduler as _sched
+from pipeline.uploader import upload_video as _uv
+
+_saved_env = {k: os.environ.get(k) for k in ("GD_SHORTS_PER_DAY", "GD_SHORTS_ONLY")}
+for _k in _saved_env:
+    os.environ.pop(_k, None)
+try:
+    _stages = _sched._build_stages("famefiles")
+    check("daily slate = 3 shorts + 1 doc", len(_stages) == 4)
+    check("every stage uploads public", all("public" in s for s in _stages))
+    check("doc stage is last", "--longform" in _stages[-1] and
+          all("--longform" not in s for s in _stages[:3]))
+    check("all stages carry the channel", all("famefiles" in s for s in _stages))
+
+    os.environ["GD_SHORTS_PER_DAY"] = "1"
+    check("GD_SHORTS_PER_DAY overrides the count",
+          len(_sched._build_stages("famefiles")) == 2)
+
+    os.environ["GD_SHORTS_PER_DAY"] = "0"
+    _clamped = _sched._build_stages("famefiles")
+    check("shorts count clamps to >= 1",
+          len(_clamped) == 2 and "--longform" in _clamped[-1])
+
+    os.environ["GD_SHORTS_PER_DAY"] = "3"
+    os.environ["GD_SHORTS_ONLY"] = "1"
+    _shorts_only = _sched._build_stages("famefiles")
+    check("GD_SHORTS_ONLY skips the doc",
+          len(_shorts_only) == 3 and all("--longform" not in s for s in _shorts_only))
+
+    _res_dir = TMP / "daily_result_test"
+    _res_dir.mkdir(exist_ok=True)
+    try:
+        os.chdir(_res_dir)
+        _sched._write_daily_result("PARTIAL", 2, 3, "failed")
+        _res = (Path("output") / "_daily_result.txt").read_text(encoding="utf-8")
+        check("daily result file carries the counts",
+              "result=PARTIAL" in _res and "shorts=2/3" in _res and "doc=failed" in _res)
+    finally:
+        os.chdir(_cwd)
+finally:
+    for _k, _v in _saved_env.items():
+        if _v is None:
+            os.environ.pop(_k, None)
+        else:
+            os.environ[_k] = _v
+
+# public by default: CLI, uploader, metadata
+import main as _main_mod
+_privacy_opt = next(p for p in _main_mod.main.params if p.name == "privacy")
+check("CLI --privacy defaults to public", _privacy_opt.default == "public")
+check("upload_video defaults to public",
+      inspect.signature(_uv).parameters["privacy_status"].default == "public")
+check("metadata records public privacy",
+      '"privacy_status": "public"' in (Path(__file__).parent / "pipeline" / "metadata.py").read_text(encoding="utf-8"))
+
+# workflow: public ad-hoc path, 3-shorts env, shorts_only mode, result artifact
+_wf = (Path(__file__).parent / ".github" / "workflows" / "daily.yml").read_text(encoding="utf-8")
+check("workflow ad-hoc short path is public", "--privacy public" in _wf)
+check("workflow pins 3 shorts/day", "GD_SHORTS_PER_DAY" in _wf)
+check("workflow offers shorts_only mode", "shorts_only" in _wf)
+check("workflow surfaces _daily_result.txt", "_daily_result.txt" in _wf)
+check("publish queue now says PUBLIC", "PUBLIC" in inspect.getsource(TN.append_publish_queue))
+
 print(f"\n{'='*50}\nRESULT: {sum(1 for _, ok, _ in RESULTS if ok)} passed, "
       f"{sum(1 for _, ok, _ in RESULTS if not ok)} failed")
 sys.exit(0 if all(ok for _, ok, _ in RESULTS) else 1)

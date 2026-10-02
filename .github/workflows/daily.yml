@@ -13,10 +13,11 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "full = short+doc via the daily gate | single_short = one extra short, no daily gate (for multi-short days)"
+        description: "full = 3 shorts + doc (daily gate) | shorts_only = 3 shorts, no doc | single_short = one ad-hoc short, no gate"
         type: choice
         options:
           - full
+          - shorts_only
           - single_short
         default: full
 
@@ -98,22 +99,28 @@ jobs:
           print(f".env: {len(keys)} keys")
           PY
 
-      - name: Run daily production (short + long-form, UNLISTED)
+      - name: Run daily production (3 shorts + 1 doc, PUBLIC)
         env:
           GD_MODE: ${{ inputs.mode || 'full' }}
+          GD_SHORTS_PER_DAY: "3"
         run: |
-          # GD_MODE=single_short: one trending short WITHOUT the daily gate —
-          # used for multi-short days (the gate would no-op a second --daily
-          # run for the same date). The no-repeat ledger keeps stories fresh.
+          # FIX-080 (operator order 2026-10-02): every day 3 shorts + 1 doc,
+          # every upload PUBLIC. The final QC gate and the compliance gate
+          # stay the safety net; PUBLISH_QUEUE.md is the verify-and-pin list.
+          # GD_MODE=single_short: one ad-hoc short WITHOUT the daily gate
+          # (the gate would no-op a second --daily run for the same date).
+          # GD_MODE=shorts_only: the full gate-managed day minus the doc.
           case "$GD_MODE" in
-            single_short) CMD_LINE="python main.py --trending --channel famefiles --privacy unlisted";;
+            single_short) CMD_LINE="python main.py --trending --channel famefiles --privacy public";;
+            shorts_only)  CMD_LINE="GD_SHORTS_ONLY=1 python main.py --daily";;
             *)            CMD_LINE="python main.py --daily";;
           esac
           echo "Mode: $GD_MODE -> $CMD_LINE"
-          # Gemini throws transient 503/429 "high demand" spikes; the whole
-          # candidate chain can 503 at once. An unattended factory RETRIES
-          # the full daily cycle instead of losing the day (the daily gate
-          # makes each attempt idempotent / reclaimable).
+          # The scheduler exits 0 when the day shipped at least one video
+          # (partial days are reported in output/_daily_result.txt) and 1
+          # only when NOTHING shipped — that is the case this outer loop
+          # rescues. The daily gate makes each attempt idempotent /
+          # reclaimable.
           for attempt in 1 2 3; do
             echo "== Attempt $attempt at $(date -u +%H:%M) UTC =="
             eval "$CMD_LINE 2>&1 | tee output/_daily.log"
@@ -141,6 +148,7 @@ jobs:
           name: production-${{ github.run_id }}
           path: |
             output/_daily.log
+            output/_daily_result.txt
             output/PUBLISH_QUEUE.md
             output/**/metadata.json
             output/**/final_qc_report.json
@@ -152,11 +160,16 @@ jobs:
         run: |
           {
             echo "## Daily production — $(date -u +%F)"
+            if [ -f output/_daily_result.txt ]; then
+              echo '```'
+              cat output/_daily_result.txt
+              echo '```'
+            fi
             echo '```'
-            grep -aE "Uploaded to|Upload skipped|Error|FAILED|COMPLETE|Quality gate" output/_daily.log | tail -20 || true
+            grep -aE "Uploaded to|Upload skipped|Error|FAILED|PARTIAL|COMPLETE|Quality gate" output/_daily.log | tail -20 || true
             echo '```'
             if [ -f output/PUBLISH_QUEUE.md ]; then
-              echo "## 📢 Publish queue (unlisted = zero distribution — publish within 6h)"
+              echo "## 📢 Verify + pin (videos are PUBLIC — check playback, pin the bridge comment)"
               cat output/PUBLISH_QUEUE.md
             fi
           } >> "$GITHUB_STEP_SUMMARY"

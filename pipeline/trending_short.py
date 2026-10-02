@@ -201,15 +201,16 @@ async def list_candidates(top: int | None = None) -> list[dict]:
 async def run_trending_short(
     story: dict | None = None,
     upload: bool = True,
-    privacy: str = "unlisted",
+    privacy: str = "public",
     channel: str = config.CHANNEL_FAMEFILES,
     resume_dir: Path | None = None,
     longform: bool = False,
 ) -> dict:
     """Produce (and optionally upload) today's trending short.
 
-    Privacy defaults to UNLISTED — the operator reviews every video and
-    flips it public. Nothing ships straight to public from automation.
+    Privacy defaults to PUBLIC (operator order 2026-10-02): videos go live
+    on upload; the final QC gate and the compliance gate remain the safety
+    net, and every video lands in PUBLISH_QUEUE.md for a verify-and-pin pass.
 
     story=None auto-picks the top-scored candidate. resume_dir reuses an
     interrupted project's research.json/script.json (research quota is never
@@ -625,7 +626,7 @@ async def run_trending_short(
 
 
 def run_cli(story_title: str | None = None, upload: bool = True,
-            privacy: str = "unlisted", resume_dir: Path | None = None,
+            privacy: str = "public", resume_dir: Path | None = None,
             channel: str | None = None, longform: bool = False) -> None:
     """Synchronous CLI entry used by main.py."""
     story = None

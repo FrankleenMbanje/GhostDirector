@@ -228,7 +228,7 @@ Background music is royalty-free.
         "description": description.strip(),
         "tags": tags,
         "category": "24",  # 24 = Entertainment (celebrity-news lane; operator call 2026-09-26)
-        "privacy_status": "unlisted",
+        "privacy_status": "public",
         "made_for_kids": False,
         "language": "en",
         "ai_generated": True,

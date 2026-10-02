@@ -780,7 +780,7 @@ def upsert_story(title: str, source: str = "", source_url: str = "",
 
 
 def upsert_video(project_name: str, project_dir: str = "", fmt: str = "short",
-                 story_id: int | None = None, visibility: str = "unlisted") -> int | None:
+                 story_id: int | None = None, visibility: str = "public") -> int | None:
     if not _SA_OK:
         return None
     try:

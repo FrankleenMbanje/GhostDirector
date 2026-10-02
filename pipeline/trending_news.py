@@ -412,18 +412,19 @@ _QUEUE_PATH = Path("output") / "PUBLISH_QUEUE.md"
 
 def append_publish_queue(story_title: str, fmt: str, video_id: str,
                          packaged_title: str | None = None) -> None:
-    """FIX-078: the publish fast-path. Unlisted videos get ZERO algorithm
-    distribution — a short that waits days to be published has lost its
-    viral window (our shorts do their views in the first 24-48h). Each
-    upload appends a row with a Studio link and a publish-by deadline
-    (upload + 6h) so the operator reviews within hours, not days."""
+    """FIX-078/FIX-080: the verify-and-pin list. Videos now upload PUBLIC
+    (operator order 2026-10-02), so the old "publish within 6h" race is
+    gone — what remains is the same-day pass: check playback, confirm the
+    packaging, and pin the bridge comment (the Data API cannot pin). Each
+    upload appends a row with a Studio link and a check-by deadline
+    (upload + 6h)."""
     try:
         now = _now_utc()
         deadline = now + timedelta(hours=6)
         fmt_label = "8-min doc" if fmt == "longform" else "Short"
         pin_note = ("pin the bridge comment (link the Short)"
                     if fmt == "longform"
-                    else "pin the bridge comment after the doc ships (or later today)")
+                    else "pin the bridge comment once the doc is live (same day)")
         row = (f"| {deadline.strftime('%b %d %H:%M UTC')} (+6h) "
                f"| {fmt_label} | {(packaged_title or story_title or '')[:60]} "
                f"| [Studio](https://studio.youtube.com/video/{video_id}/edit) "
@@ -431,8 +432,10 @@ def append_publish_queue(story_title: str, fmt: str, video_id: str,
         _QUEUE_PATH.parent.mkdir(exist_ok=True)
         if not _QUEUE_PATH.exists():
             _QUEUE_PATH.write_text(
-                "# PUBLISH QUEUE — review & publish within 6h of upload\n\n"
-                "Unlisted videos earn nothing. Publish-by is upload time + 6h.\n\n"
+                "# PUBLISH QUEUE — verify & pin within 6h of upload\n\n"
+                "Videos upload PUBLIC automatically (operator order 2026-10-02). "
+                "Check playback + pin the bridge comment; pull anything broken "
+                "back to unlisted from Studio.\n\n"
                 "| publish-by | format | title | review | watch | pin |\n"
                 "|---|---|---|---|---|---|\n",
                 encoding="utf-8")

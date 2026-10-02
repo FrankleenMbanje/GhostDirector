@@ -102,7 +102,7 @@ class RunRecorder:
             pass
 
     def video(self, project_name: str, project_dir: str = "", fmt: str = "short",
-              visibility: str = "unlisted") -> None:
+              visibility: str = "public") -> None:
         self.project_name = project_name
         if self.db is None:
             return
