@@ -154,6 +154,17 @@ def _run_intel(channel: str, env: dict) -> None:
             memory = json.loads(mem_path.read_text(encoding="utf-8"))
         parts.insert(0, "## DIAGNOSIS\n" + "\n".join(
             diagnose(daily, memory, _queued_topics())))
+        # FIX-086: evaluate running experiments against today's catalogue.
+        try:
+            from pipeline import experiments as _EX
+            reg = _EX.load()
+            _EX.ensure_defaults(reg)
+            rows_by_id = {r.get("id"): r for r in (memory or {}).get("rows", [])}
+            lines_x = _EX.run_cycle(reg, rows_by_id)
+            _EX.save(reg)
+            parts.insert(1, "## EXPERIMENTS\n" + "\n".join(lines_x))
+        except Exception as e_x:
+            log.warning(f"Experiment cycle skipped ({e_x})")
     except Exception as e:
         parts.insert(0, f"## DIAGNOSIS\nskipped ({e})")
     try:

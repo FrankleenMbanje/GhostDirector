@@ -766,6 +766,77 @@ check("splice result keeps an audio stream",
 check("splice keeps the main video intact (stream copy)",
       _out.stat().st_size >= _main.stat().st_size * 0.5)
 
+# ── 7.17 experiment engine (FIX-086) ────────────────────────────────
+print("\n[7.17] experiment engine (FIX-086)")
+import copy as _copy
+import datetime as _dt
+from pipeline import experiments as EX
+
+_reg = {"version": 1, "promoted": {}, "experiments": []}
+EX.ensure_defaults(_reg)
+check("default experiment seeded", EX.find(_reg, "real_audio_hook") is not None)
+_exp = EX.find(_reg, "real_audio_hook")
+check("arm counts track assignments",
+      EX.arm_counts({"variants": ["on", "off"],
+                     "assignment": {"on": ["a"], "off": []}}) == {"on": 1, "off": 0})
+# pending-aware alternation + recording through a temp registry file
+_reg_path = TMP / "experiments_test.json"
+_orig_reg_path = EX.REGISTRY_PATH
+try:
+    _reg_path.unlink(missing_ok=True)
+    EX.REGISTRY_PATH = _reg_path
+    _assigned = [EX.assign_variant("real_audio_hook", default="on")
+                 for _ in range(4)]
+    check("assignment alternates by count (pending-aware)",
+          _assigned == ["on", "off", "on", "off"])
+    EX.record("real_audio_hook", "on", "vid_on_1")
+    EX.record("real_audio_hook", "off", "vid_off_1")
+    _ex_disk = EX.find(EX.load(), "real_audio_hook")
+    check("recorded ids land in their arms",
+          "vid_on_1" in _ex_disk["assignment"]["on"] and
+          "vid_off_1" in _ex_disk["assignment"]["off"])
+    check("promoted default is used when no experiment runs",
+          EX.active("real_audio_hook", default="off") == "off")
+finally:
+    EX.REGISTRY_PATH = _orig_reg_path
+
+_exp["assignment"] = {"on": [f"a{i}" for i in range(6)],
+                      "off": [f"b{i}" for i in range(6)]}
+_rowsx = {**{f"a{i}": {"views": 2000 + i} for i in range(6)},
+          **{f"b{i}": {"views": 900 + i} for i in range(6)}}
+check("evaluate decides a 2x leader",
+      EX.evaluate(_exp, _rowsx)["status"] == "decided" and
+      EX.evaluate(_exp, _rowsx)["winner"] == "on")
+lines_x = EX.run_cycle(_reg, _rowsx)
+check("decision promotes the winner",
+      _reg["promoted"].get("real_audio_hook") == "on")
+check("cycle reports the decision", any("DECIDED" in ln for ln in lines_x))
+
+_reg2 = {"version": 1, "promoted": {}, "experiments": []}
+EX.ensure_defaults(_reg2)
+_e2 = EX.find(_reg2, "real_audio_hook")
+_e2["assignment"] = {"on": ["x1"], "off": ["y1"]}
+_v2 = EX.evaluate(_e2, {"x1": {"views": 5000}, "y1": {"views": 10}})
+check("no decision without the minimum sample", _v2["status"] == "pending")
+check("pending states what it needs", "needs more videos" in _v2["reason"])
+
+_e3 = _copy.deepcopy(_e2)
+_e3["started"] = (EX._now() - _dt.timedelta(days=10)).isoformat()
+_e3["assignment"] = {"on": [f"c{i}" for i in range(6)],
+                     "off": [f"d{i}" for i in range(6)]}
+_rows3 = {**{f"c{i}": {"views": 1000} for i in range(6)},
+          **{f"d{i}": {"views": 950} for i in range(6)}}
+check("inconclusive after the window without a significant gap",
+      EX.evaluate(_e3, _rows3)["status"] == "inconclusive")
+
+_sched_x = (Path(__file__).parent / "storage" / "scheduler.py").read_text(encoding="utf-8")
+check("cloud runs the experiment cycle daily",
+      "run_cycle" in _sched_x and "EXPERIMENTS" in _sched_x)
+check("workflow persists the registry", "experiments.json" in _wf)
+_ts_x = (Path(__file__).parent / "pipeline" / "trending_short.py").read_text(encoding="utf-8")
+check("production assigns + records the arm",
+      "assign_variant" in _ts_x and "real_audio_hook" in _ts_x)
+
 print(f"\n{'='*50}\nRESULT: {sum(1 for _, ok, _ in RESULTS if ok)} passed, "
       f"{sum(1 for _, ok, _ in RESULTS if not ok)} failed")
 sys.exit(0 if all(ok for _, ok, _ in RESULTS) else 1)

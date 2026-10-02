@@ -69,6 +69,7 @@ jobs:
         run: |
           mkdir -p db
           cp -f output/state/trending_news.json db/ 2>/dev/null || true
+          cp -f output/state/experiments.json db/ 2>/dev/null || true
           cp -f output/state/ghostdirector.db output/ 2>/dev/null || true
 
       - name: Write secrets
@@ -166,6 +167,9 @@ jobs:
           # idempotency; keep both across runs.
           mkdir -p output/state
           cp -f db/trending_news.json output/state/ 2>/dev/null || true
+          # FIX-086: the experiment registry must survive runs — it is the
+          # cloud's memory of which arm each video belongs to.
+          cp -f db/experiments.json output/state/ 2>/dev/null || true
           cp -f output/ghostdirector.db output/state/ 2>/dev/null || true
 
       - name: Upload production artifacts

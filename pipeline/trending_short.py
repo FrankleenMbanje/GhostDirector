@@ -278,6 +278,14 @@ async def run_trending_short(
     say(f"\n[bold magenta]═══ {banner} ═══[/bold magenta]")
 
     hook_prov = None
+    # FIX-086: experiment assignment — one production variable at a time.
+    # No experiment running (or a promoted winner) -> the current default.
+    try:
+        from pipeline import experiments as _EX
+        hook_mode = _EX.assign_variant("real_audio_hook", default="on")
+    except Exception as e:
+        log.warning(f"Experiment assignment skipped ({e})")
+        hook_mode = "on"
 
     # ── Resume: pin the story to the interrupted project ──
     # FIX: a resume that auto-picks a *fresh* story pairs it with the OLD
@@ -536,7 +544,7 @@ async def run_trending_short(
         # clip's OWN audio, ~3 seconds in front of the short (operator's edit-
         # language ask). Normalized + spliced as a stream copy; any failure
         # ships the un-hooked render instead. Shorts only; vertical only.
-        if _is_vertical:
+        if _is_vertical and hook_mode == "on":
             try:
                 hq = hook_query_for((story or {}).get("title") or script.title or "")
                 if hq:
@@ -557,6 +565,8 @@ async def run_trending_short(
             except Exception as e:
                 log.warning(f"Hook step failed (non-fatal): {e}")
                 hook_prov = None
+        elif _is_vertical:
+            say("[dim]Hook experiment: this video is in the no-hook arm[/dim]")
     else:
         recorder.fail("final QC failed: " + "; ".join(qc_issues)[:300])
         say(f"[bold red]✗ Final QC FAILED:[/bold red] {qc_issues}")
@@ -641,6 +651,12 @@ async def run_trending_short(
         except Exception as e:
             log.warning(f"Upload verification skipped ({e})")
         recorder.upload(video_id, f"https://youtu.be/{video_id}", privacy)
+        # FIX-086: attach the shipped video to its experimental arm.
+        try:
+            from pipeline import experiments as _EX
+            _EX.record("real_audio_hook", hook_mode, video_id)
+        except Exception as e:
+            log.warning(f"Experiment record failed ({e})")
         say(f"[green]✓ Uploaded to {channel}:[/green] https://youtu.be/{video_id} (privacy={privacy})")
 
     # ── Ledgers ──
