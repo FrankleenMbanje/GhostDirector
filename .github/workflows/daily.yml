@@ -10,7 +10,15 @@ on:
     # 2026-09-30: every model 429'd, then the UTC-date quarantine kept
     # attempts 2–3 dead even after the 07:00 UTC refill).
     - cron: "30 8 * * *"
-  workflow_dispatch: {}   # manual "Run workflow" button for tests
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "full = short+doc via the daily gate | single_short = one extra short, no daily gate (for multi-short days)"
+        type: choice
+        options:
+          - full
+          - single_short
+        default: full
 
 permissions:
   contents: read
@@ -91,14 +99,24 @@ jobs:
           PY
 
       - name: Run daily production (short + long-form, UNLISTED)
+        env:
+          GD_MODE: ${{ inputs.mode || 'full' }}
         run: |
+          # GD_MODE=single_short: one trending short WITHOUT the daily gate —
+          # used for multi-short days (the gate would no-op a second --daily
+          # run for the same date). The no-repeat ledger keeps stories fresh.
+          case "$GD_MODE" in
+            single_short) CMD_LINE="python main.py --trending --channel famefiles --privacy unlisted";;
+            *)            CMD_LINE="python main.py --daily";;
+          esac
+          echo "Mode: $GD_MODE -> $CMD_LINE"
           # Gemini throws transient 503/429 "high demand" spikes; the whole
           # candidate chain can 503 at once. An unattended factory RETRIES
           # the full daily cycle instead of losing the day (the daily gate
           # makes each attempt idempotent / reclaimable).
           for attempt in 1 2 3; do
             echo "== Attempt $attempt at $(date -u +%H:%M) UTC =="
-            python main.py --daily 2>&1 | tee output/_daily.log
+            eval "$CMD_LINE 2>&1 | tee output/_daily.log"
             code=${PIPESTATUS[0]}
             if [ "$code" -eq 0 ]; then exit 0; fi
             echo "Attempt $attempt failed (exit $code) - cooling down 10 min"

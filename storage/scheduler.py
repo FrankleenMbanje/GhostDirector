@@ -143,9 +143,13 @@ def run_daily(force: bool = False, channel: str = "famefiles") -> int:
         # the ledger records both runs). Long-form failure never blocks
         # the short from having shipped.
         ok = True
-        for fmt_args in (["--trending", "--channel", channel, "--privacy", "unlisted"],
-                         ["--trending", "--longform", "--channel", channel,
-                          "--privacy", "unlisted"]):
+        # GD_SHORTS_ONLY=1: run ONLY the short stage (multi-short days — the
+        # long-form doc rides its own run so a 503 storm can't cost both).
+        stages = (["--trending", "--channel", channel, "--privacy", "unlisted"],)
+        if os.environ.get("GD_SHORTS_ONLY", "") != "1":
+            stages += ("--trending", "--longform", "--channel", channel,
+                       "--privacy", "unlisted"),
+        for fmt_args in stages:
             cmd = [sys.executable, "main.py", *fmt_args]
             log.info(f"Daily production command: {cmd}")
             proc = subprocess.run(cmd, cwd=Path.cwd(), env=env)
