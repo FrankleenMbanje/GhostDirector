@@ -231,9 +231,17 @@ async def run_trending_short(
     )
     import os as _os
     within_daily = bool(_os.environ.get("GD_WITHIN_DAILY"))
-    if recorder.duplicate and not within_daily:
+    # FIX-082: ad-hoc extras (workflow mode single_short) run OUTSIDE the
+    # daily gate. Without this flag the gate's publish idempotency — which is
+    # correct for the scheduled day — makes every extra-short dispatch die as
+    # a "duplicate" instead of producing the extra video.
+    adhoc = bool(_os.environ.get("GD_ADHOC"))
+    if recorder.duplicate and not within_daily and not adhoc:
         say("[yellow]Today's production already exists — skipping duplicate run.[/yellow]")
         return {"ok": False, "reason": "duplicate_daily_run"}
+    if recorder.duplicate and adhoc:
+        say("[dim]Ad-hoc extra: today's daily run is already published — "
+            "producing anyway (no-repeat ledger still applies).[/dim]")
 
     console = None
     try:

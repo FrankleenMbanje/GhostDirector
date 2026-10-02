@@ -134,9 +134,11 @@ jobs:
           # stay the safety net; PUBLISH_QUEUE.md is the verify-and-pin list.
           # GD_MODE=single_short: one ad-hoc short WITHOUT the daily gate
           # (the gate would no-op a second --daily run for the same date).
+          # GD_ADHOC (FIX-082) tells the pipeline's own publish-idempotency
+          # check to stand down so the extra actually gets produced.
           # GD_MODE=shorts_only: the full gate-managed day minus the doc.
           case "$GD_MODE" in
-            single_short) CMD_LINE="python main.py --trending --channel famefiles --privacy public";;
+            single_short) CMD_LINE="GD_ADHOC=1 python main.py --trending --channel famefiles --privacy public";;
             shorts_only)  CMD_LINE="GD_SHORTS_ONLY=1 python main.py --daily";;
             *)            CMD_LINE="python main.py --daily";;
           esac

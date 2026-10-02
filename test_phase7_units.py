@@ -636,6 +636,11 @@ check("get_duration imported in trending_short",
 _up_src = (Path(__file__).parent / "pipeline" / "uploader.py").read_text(encoding="utf-8")
 check("idempotency guard is duration-aware", "looks_dup" in _up_src)
 check("same-title doc gets a distinct suffix", "(Full Story)" in _up_src)
+# FIX-082: ad-hoc extras must survive the day's publish idempotency
+check("ad-hoc extras bypass the publish-idempotency stop", "GD_ADHOC" in _ts_src)
+check("ad-hoc duplicate is a warning, not a hard stop",
+      "producing anyway" in _ts_src)
+check("workflow passes GD_ADHOC in single_short mode", "GD_ADHOC=1" in _wf)
 
 print(f"\n{'='*50}\nRESULT: {sum(1 for _, ok, _ in RESULTS if ok)} passed, "
       f"{sum(1 for _, ok, _ in RESULTS if not ok)} failed")
