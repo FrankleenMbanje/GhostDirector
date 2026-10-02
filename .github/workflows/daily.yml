@@ -99,6 +99,31 @@ jobs:
           print(f".env: {len(keys)} keys")
           PY
 
+      - name: Token health check (warn-only)
+        # FIX-080: the Testing-mode OAuth app's refresh token dies ~7 days
+        # after minting (next expiry ~Oct 7). Catch it at setup with a clear
+        # warning instead of discovering it 40 min later at the upload step.
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          import json, urllib.parse, urllib.request
+          tok = json.load(open("youtube_token.famefiles.json", encoding="utf-8"))
+          data = urllib.parse.urlencode({
+              "client_id": tok["client_id"],
+              "client_secret": tok["client_secret"],
+              "refresh_token": tok["refresh_token"],
+              "grant_type": "refresh_token",
+          }).encode()
+          try:
+              r = json.load(urllib.request.urlopen(
+                  "https://oauth2.googleapis.com/token", data=data, timeout=20))
+              print("TOKEN OK - access token acquired, expires_in",
+                    r.get("expires_in"), "s")
+          except Exception as e:
+              print(f"::warning::YouTube refresh token failed ({e}) - today's "
+                    f"uploads will fail. Re-mint the token or publish the OAuth app.")
+          PY
+
       - name: Run daily production (3 shorts + 1 doc, PUBLIC)
         env:
           GD_MODE: ${{ inputs.mode || 'full' }}
