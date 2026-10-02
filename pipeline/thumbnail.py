@@ -672,6 +672,44 @@ def _italic_text(text: str, font, fill, shear: float = 0.22):
     return layer
 
 
+_KIT_SEAM_CACHE: dict[tuple[int, int], int] = {}
+
+
+def _kit_divider_x(width: int, height: int) -> int:
+    """FIX-074: the x where the kit's white middle line ACTUALLY sits.
+
+    The outline overlay bakes its divider right of centre (x≈683–695 on
+    1280x720); the painter used to seam the two faces at width//2 (x=640),
+    leaving ~43px of the right face peeking out LEFT of the white line —
+    which read as a missing/diverged divider. Detect the line's centre
+    column from the kit overlay so the faces butt exactly at the line.
+    Falls back to the midpoint when the kit is missing/off-size.
+    """
+    key = (width, height)
+    if key in _KIT_SEAM_CACHE:
+        return _KIT_SEAM_CACHE[key]
+    seam = width // 2
+    if (width, height) == _KIT_CANVAS and _THUMB_KIT_DIR.exists():
+        try:
+            arr = np.asarray(
+                Image.open(_THUMB_KIT_DIR / "outline for thumbnails.png")
+                .convert("RGBA"), dtype=float)
+            alpha = arr[..., 3]
+            full_height = [x for x in range(width)
+                           if (alpha[:, x] > 200).mean() > 0.7]
+            white_cols = []
+            for x in full_height:
+                opaque = alpha[:, x] > 200
+                if opaque.any() and arr[:, x, :3][opaque].mean() > 200:
+                    white_cols.append(x)
+            if white_cols:
+                seam = (min(white_cols) + max(white_cols)) // 2
+        except Exception:
+            seam = width // 2
+    _KIT_SEAM_CACHE[key] = seam
+    return seam
+
+
 def _layout_exclusive_news(img, words, font_size, width, height, style):
     """EXCLUSIVE News Split (2Pac reference): faces left+right split by a
     white line, red EXCLUSIVE bar, white headline bar, LIVE badge.
@@ -689,9 +727,11 @@ def _layout_exclusive_news(img, words, font_size, width, height, style):
     ink = _hex(pal.get("headline_text"), (17, 17, 17))
 
     canvas = Image.new("RGB", (width, height), (10, 10, 14))
-    half_w = width // 2
+    # FIX-074: seam the faces AT the kit's white line, not at the midpoint —
+    # the line sits at x≈689 on 1280x720, so the right face starts there.
+    seam_x = _kit_divider_x(width, height)
 
-    def _face(photo) -> Image.Image | None:
+    def _face(photo, w: int) -> Image.Image | None:
         try:
             p = _EXCLUSIVE_KIT.get(photo)
             if not p:
@@ -699,20 +739,20 @@ def _layout_exclusive_news(img, words, font_size, width, height, style):
             im = Image.open(p).convert("RGB")
             if im.size[0] < 300 or im.size[1] < 300:
                 return None
-            im = _fill_crop(im, half_w, height)
+            im = _fill_crop(im, w, height)
             im = ImageEnhance.Color(im).enhance(1.18)
             im = ImageEnhance.Contrast(im).enhance(1.08)
             return im
         except Exception:
             return None
 
-    left = _face("primary")
+    left = _face("primary", seam_x)
     if left is None:
-        left = _fill_crop(img.convert("RGB"), half_w, height)
-    right = _face("secondary") or left.transpose(Image.FLIP_LEFT_RIGHT)
+        left = _fill_crop(img.convert("RGB"), seam_x, height)
+    right = _face("secondary", width - seam_x) or left.transpose(Image.FLIP_LEFT_RIGHT)
 
     canvas.paste(left, (0, 0))
-    canvas.paste(right, (half_w, 0))
+    canvas.paste(right, (seam_x, 0))
 
     headline = " ".join(words[:5]).upper() or "BREAKING NOW"
 

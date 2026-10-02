@@ -572,7 +572,24 @@ async def run_trending_short(
 
     # ── Ledgers ──
     record_story(story, status="used" if video_id else "produced",
-                 channel=channel, video_id=video_id, project_dir=str(project_dir))
+                 channel=channel, video_id=video_id, project_dir=str(project_dir),
+                 fmt="longform" if longform else "short")
+
+    # FIX-077: the short↔doc bridge. Whichever sibling ships second gets a
+    # comment linking the first (posted automatically; the operator pins it
+    # with one click at publish time — the Data API cannot pin).
+    if video_id:
+        try:
+            from pipeline.trending_news import find_companion_video_id
+            from pipeline.uploader import post_companion_bridge
+            want = "short" if longform else "longform"
+            companion = find_companion_video_id(story.get("title") or "", want)
+            if companion:
+                post_companion_bridge(video_id, companion, companion_is_doc=(want == "longform"))
+            else:
+                log.info("No companion video yet for this story — bridge skipped")
+        except Exception as e:
+            log.warning(f"Bridge comment step failed (non-fatal): {e}")
     if video_id:
         recorder.complete()
     else:
@@ -586,6 +603,17 @@ async def run_trending_short(
         youtube_url=f"https://youtu.be/{video_id}" if video_id else None,
         channel=channel,
     )
+
+    # FIX-078: publish fast-path — every shipped video lands in the queue
+    # with a Studio link and a +6h publish-by deadline.
+    if video_id:
+        try:
+            from pipeline.trending_news import append_publish_queue
+            append_publish_queue(story.get("title") or topic,
+                                 "longform" if longform else "short",
+                                 video_id, packaged_title=meta["title"])
+        except Exception as e:
+            log.warning(f"Publish queue update failed (non-fatal): {e}")
 
     return {
         "ok": True,

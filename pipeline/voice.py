@@ -68,6 +68,12 @@ async def _generate_edge_tts_with_pauses(
         base_rate_val = int(str(rate).replace("%", "").replace("+", "").strip() or 0)
     except ValueError:
         base_rate_val = 0
+    # FIX-075: parse the base pitch too — a constant pitch is as much a TTS
+    # fingerprint as a constant rate; real readers drift up and down.
+    try:
+        base_pitch_val = int(str(pitch).replace("Hz", "").replace("+", "").strip() or 0)
+    except ValueError:
+        base_pitch_val = 0
 
     with tempfile.TemporaryDirectory(prefix="gd_tts_") as tmp:
         tmpdir = Path(tmp)
@@ -78,8 +84,11 @@ async def _generate_edge_tts_with_pauses(
             # Per-sentence rate jitter: +-4%, deterministic per (seed, sentence)
             jitter = round(random.Random(f"voice:{seed}:{i}").uniform(-4, 4))
             rate_i = f"{base_rate_val + jitter:+d}%"
+            # FIX-075: per-sentence pitch drift ±6 Hz around the template base
+            pitch_jitter = round(random.Random(f"pitch:{seed}:{i}").uniform(-6, 6))
+            pitch_i = f"{base_pitch_val + pitch_jitter:+d}Hz"
             try:
-                await _generate_edge_tts(sent, voice_id, rate_i, pitch, part)
+                await _generate_edge_tts(sent, voice_id, rate_i, pitch_i, part)
                 if part.exists() and part.stat().st_size > 0:
                     parts.append(part)
                     if i < len(sentences) - 1:
@@ -313,7 +322,7 @@ async def generate_voices(script: Script, template: dict, output_dir: Path) -> S
 
     voice_config = template.get("voice", {})
     provider = voice_config.get("provider", "edge-tts").lower()
-    voice_id = voice_config.get("voice_id", "en-US-GuyNeural")
+    voice_id = voice_config.get("voice_id", "en-US-AndrewMultilingualNeural")
     base_rate = voice_config.get("rate", "+0%")
     base_pitch = voice_config.get("pitch", "+0Hz")
     natural_pauses = voice_config.get("natural_pauses", True)
@@ -332,7 +341,7 @@ async def generate_voices(script: Script, template: dict, output_dir: Path) -> S
             "voice_elevenlabs.voice_id to enable)."
         )
         provider = "edge-tts"
-        voice_id = voice_config.get("voice_id", "en-US-GuyNeural")
+        voice_id = voice_config.get("voice_id", "en-US-AndrewMultilingualNeural")
 
     with Progress(
         SpinnerColumn(),
@@ -382,7 +391,7 @@ async def generate_voices(script: Script, template: dict, output_dir: Path) -> S
                 if provider == "elevenlabs":
                     logger.warning(f"Falling back to Edge-TTS for scene {sn}...")
                     try:
-                        edge_voice = template.get("voice", {}).get("voice_id", "en-US-GuyNeural")
+                        edge_voice = template.get("voice", {}).get("voice_id", "en-US-AndrewMultilingualNeural")
                         await _generate_edge_tts_with_pauses(
                             scene.narration, edge_voice, scene_rate, scene_pitch, output_path,
                             seed=sn,

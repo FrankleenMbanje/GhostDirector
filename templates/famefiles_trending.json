@@ -30,7 +30,7 @@
   },
   "voice": {
     "provider": "edge-tts",
-    "voice_id": "en-US-AvaNeural",
+    "voice_id": "en-US-AvaMultilingualNeural",
     "rate": "+12%",
     "pitch": "+2Hz"
   },

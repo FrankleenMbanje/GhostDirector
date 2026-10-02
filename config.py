@@ -265,7 +265,7 @@ def _record_live_chain(candidates: list[str]) -> None:
 DEFAULT_TTS_PROVIDER = "edge-tts"
 
 # Edge-TTS settings
-EDGE_TTS_VOICE = "en-US-GuyNeural"
+EDGE_TTS_VOICE = "en-US-AndrewMultilingualNeural"
 EDGE_TTS_RATE = "+0%"
 EDGE_TTS_PITCH = "+0Hz"
 

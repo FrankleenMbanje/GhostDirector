@@ -123,6 +123,7 @@ jobs:
           name: production-${{ github.run_id }}
           path: |
             output/_daily.log
+            output/PUBLISH_QUEUE.md
             output/**/metadata.json
             output/**/final_qc_report.json
           retention-days: 7
@@ -136,4 +137,8 @@ jobs:
             echo '```'
             grep -aE "Uploaded to|Upload skipped|Error|FAILED|COMPLETE|Quality gate" output/_daily.log | tail -20 || true
             echo '```'
+            if [ -f output/PUBLISH_QUEUE.md ]; then
+              echo "## 📢 Publish queue (unlisted = zero distribution — publish within 6h)"
+              cat output/PUBLISH_QUEUE.md
+            fi
           } >> "$GITHUB_STEP_SUMMARY"

@@ -651,9 +651,9 @@ def mix_audio_with_music(
     music_path: Path,
     output_path: Path,
     voice_volume_db: float = 0,
-    music_volume_db: float = -20,
+    music_volume_db: float = -24,
     ducking: bool = True,
-    ducking_reduction_db: float = -12,
+    ducking_reduction_db: float = -15,
     sfx_path: Path | None = None,
     sfx_volume_db: float = -8.0,
     music_fadeout_seconds: float = 2.5,
@@ -668,8 +668,19 @@ def mix_audio_with_music(
         top of narration the way a fixed 0.6 volume did.
       - The music tail fades out over `music_fadeout_seconds` ending at the
         mix end, so the soundtrack doesn't hard-clip when the video stops.
+
+    FIX-076 (operator: "music is too loud sometimes"):
+      - default music bed -20 → -24 dB, ducker ratio 10 → 14 and threshold
+        0.05 → 0.03 so the bed sits UNDER the voice even between phrases;
+      - voice chain starts with single-pass loudnorm (I=-16, TP=-1.5) so the
+        narration rides at a steady level before the compressor;
+      - the final amix is capped by a limiter (alimiter=0.971 ≈ -0.26 dBFS)
+        so loud music stingers can never clip the mix.
     """
-    voice_fx = "acompressor=threshold=-15dB:ratio=3:attack=5:release=50,equalizer=f=3000:width_type=o:width=1:g=3,equalizer=f=100:width_type=o:width=1:g=2"
+    voice_fx = ("loudnorm=I=-16:TP=-1.5:LRA=11,"
+                "acompressor=threshold=-15dB:ratio=3:attack=5:release=50,"
+                "equalizer=f=3000:width_type=o:width=1:g=3,"
+                "equalizer=f=100:width_type=o:width=1:g=2")
 
     # Music tail fade (A25): afade `st` is relative to the music stream's own
     # timeline, so we need the mix length. The caller knows it (it just
@@ -691,19 +702,22 @@ def mix_audio_with_music(
             filter_str = (
                 f"[0:a]{voice_fx},volume={voice_volume_db}dB,asplit=3[voice][voice2][voice3];"
                 f"[1:a]{music_fx}[music];"
-                f"[music][voice2]sidechaincompress=threshold=0.05:ratio=10:attack=50:release=300[ducked_music];"
+                f"[music][voice2]sidechaincompress=threshold=0.03:ratio=14:attack=50:release=400[ducked_music];"
                 # SFX ducked under narration as well — a 3-4s whoosh played at
                 # fixed volume used to talk over the first words of a scene.
                 f"[2:a]volume={sfx_volume_db}dB[sfx_raw];"
                 f"[sfx_raw][voice3]sidechaincompress=threshold=0.03:ratio=6:attack=20:release=250[sfx];"
-                f"[voice][ducked_music][sfx]amix=inputs=3:duration=first:dropout_transition=2[out]"
+                # FIX-076: limiter after the mix — never clip the final master.
+                f"[voice][ducked_music][sfx]amix=inputs=3:duration=first:dropout_transition=2[mixed];"
+                f"[mixed]alimiter=limit=0.971:level=false[out]"
             )
         else:
             filter_str = (
                 f"[0:a]{voice_fx},volume={voice_volume_db}dB[voice];"
                 f"[1:a]{music_fx}[music];"
                 f"[2:a]volume={sfx_volume_db}dB[sfx];"
-                f"[voice][music][sfx]amix=inputs=3:duration=first:dropout_transition=2[out]"
+                f"[voice][music][sfx]amix=inputs=3:duration=first:dropout_transition=2[mixed];"
+                f"[mixed]alimiter=limit=0.971:level=false[out]"
             )
     else:
         if ducking:
@@ -711,14 +725,16 @@ def mix_audio_with_music(
             filter_str = (
                 f"[0:a]{voice_fx},volume={voice_volume_db}dB,asplit=2[voice][voice2];"
                 f"[1:a]{music_fx}[music];"
-                f"[music][voice2]sidechaincompress=threshold=0.05:ratio=10:attack=50:release=300[ducked_music];"
-                f"[voice][ducked_music]amix=inputs=2:duration=first:dropout_transition=2[out]"
+                f"[music][voice2]sidechaincompress=threshold=0.03:ratio=14:attack=50:release=400[ducked_music];"
+                f"[voice][ducked_music]amix=inputs=2:duration=first:dropout_transition=2[mixed];"
+                f"[mixed]alimiter=limit=0.971:level=false[out]"
             )
         else:
             filter_str = (
                 f"[0:a]{voice_fx},volume={voice_volume_db}dB[voice];"
                 f"[1:a]{music_fx}[music];"
-                f"[voice][music]amix=inputs=2:duration=first:dropout_transition=2[out]"
+                f"[voice][music]amix=inputs=2:duration=first:dropout_transition=2[mixed];"
+                f"[mixed]alimiter=limit=0.971:level=false[out]"
             )
 
     args.extend([

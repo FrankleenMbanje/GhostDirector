@@ -140,6 +140,39 @@ def post_pinned_comment(youtube, video_id: str, text: str) -> bool:
         return False
 
 
+def _companion_comment_text(companion_url: str, companion_is_doc: bool) -> str:
+    """FIX-077: the bridge comment posted on BOTH siblings of a story.
+    Unlisted during production; the operator pins it when publishing."""
+    if companion_is_doc:
+        return (f"👀 The FULL story is here: {companion_url} "
+                f"(8-min breakdown of everything in this Short)")
+    return (f"⏱️ In a hurry? Watch the 45-second version: {companion_url}")
+
+
+def post_companion_bridge(uploaded_video_id: str, companion_video_id: str,
+                          companion_is_doc: bool) -> bool:
+    """FIX-077: cross-link a shipped video to its story sibling.
+
+    The 28-day analytics showed the bridge is the whole funnel: the Khaled
+    short pulled 1.4k views while the doc on the SAME story got 23 — there
+    was no path from one to the other. The Data API cannot PIN a comment,
+    so this posts it and the operator pins it with one click at publish
+    time (checklist item 'pin_bridge_comment').
+    """
+    try:
+        youtube = get_authenticated_service()
+        text = _companion_comment_text(
+            f"https://youtu.be/{companion_video_id}", companion_is_doc)
+        ok = post_pinned_comment(youtube, uploaded_video_id, text)
+        if ok:
+            logger.info(f"Bridge comment posted on {uploaded_video_id} -> "
+                        f"{companion_video_id} (pin it when publishing)")
+        return ok
+    except Exception as e:
+        logger.warning(f"Bridge comment failed: {e}")
+        return False
+
+
 def _reassert_after_processing(youtube, video_id: str, privacy_status: str,
                                max_wait_s: int = 900) -> None:
     """Post-upload guard (2026-09-26): poll until YouTube finishes transcoding,

@@ -17,6 +17,7 @@ Separation from Rise and Ruin is enforced two ways:
 
 import asyncio
 import json
+import os
 import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
@@ -229,6 +230,10 @@ def _score(item: dict, seen_keys: set[str]) -> float | None:
     low = title.lower()
     score = 0.0
 
+    # FIX-079: lane bonus — in-lane stories rank ahead of everything else
+    lane = _lane_hits(title)
+    score += min(lane, 2) * 0.8
+
     # Celebrity signal: a known name or strong celeb nouns in the headline
     for name in _BOOST_NAMES:
         if name.lower() in low:
@@ -305,6 +310,7 @@ async def discover_trending(limit: int | None = None) -> list[dict]:
     seen |= {_story_key(t) for t in _packaging_titles()}
 
     now = _now_utc()
+    lane_lock = os.environ.get("GD_LANE_LOCK", "1") not in ("0", "false", "no")
     scored: list[dict] = []
     for it in results:
         s = _score(it, seen)
@@ -317,15 +323,46 @@ async def discover_trending(limit: int | None = None) -> list[dict]:
             "when_hours_ago": round((now - dt).total_seconds() / 3600, 1) if dt else None,
         })
 
+    scored = _lane_gate(scored, lane_lock)
     scored.sort(key=lambda x: x["score"], reverse=True)
     return scored[:limit]
 
 
+# FIX-079 lane lock (2026-10-02): the four winners (1.3k-1.6k views) are all
+# Taylor Swift / rapper-drama; out-of-lane essays (Pattinson, Holmes) die at
+# 10-51 views. Items that hit the lane pass at any score; items that miss it
+# need an exceptional headline (score >= 4.0) or they are rejected. Set
+# GD_LANE_LOCK=0 to disable (operator override).
+_LANE_LOCK_RE = [
+    r"taylor swift", r"travis kelce", r"drake", r"kendrick", r"kanye\b|\bye\b",
+    r"diddy|combs", r"50 cent", r"cardi b", r"nicki minaj", r"karol g",
+    r"feud|beef|diss track|callout|call out", r"lawsuit|sues|sued|lawyers",
+    r"arrest|arrested|court|trial|exiled|banned", r"scandal|exposed|drama",
+]
+_LANE_LOCK_THRESHOLD = 4.0
+
+
+def _lane_hits(title: str) -> int:
+    low = (title or "").lower()
+    return sum(1 for p in _LANE_LOCK_RE if re.search(p, low))
+
+
+def _lane_gate(items: list[dict], enabled: bool) -> list[dict]:
+    """FIX-079: drop out-of-lane stories unless the headline is exceptional
+    (score >= _LANE_LOCK_THRESHOLD). In-lane items always pass."""
+    if not enabled:
+        return items
+    return [it for it in items
+            if it["score"] >= _LANE_LOCK_THRESHOLD
+            or _lane_hits(it.get("title") or "") > 0]
+
+
 def record_story(story: dict, status: str = "seen",
                  channel: str | None = None, video_id: str | None = None,
-                 project_dir: str | None = None) -> None:
+                 project_dir: str | None = None, fmt: str | None = None) -> None:
     """Upsert a story in the ledger (one entry per key; status updated).
-    status: 'seen' | 'produced' | 'used' | 'skipped'."""
+    status: 'seen' | 'produced' | 'used' | 'skipped'.
+    fmt: 'short' | 'longform' — lets the FIX-077 bridge find the sibling."""
     ledger = _load_ledger()
     entry = {
         "key": _story_key(story.get("title") or ""),
@@ -337,11 +374,16 @@ def record_story(story: dict, status: str = "seen",
         "channel": channel,
         "video_id": video_id,
         "project_dir": project_dir,
+        "fmt": fmt,
         "recorded_at": _now_utc().isoformat(),
     }
     stories = ledger.setdefault("stories", [])
     for i, s in enumerate(stories):
-        if s.get("key") == entry["key"]:
+        # FIX-077: upsert per (key, fmt) so the short and the doc of one
+        # story coexist in the ledger — the bridge needs to find BOTH ids.
+        # Key-only dedupe (story freshness) still works: any entry with the
+        # key marks the story as seen.
+        if s.get("key") == entry["key"] and s.get("fmt") == entry["fmt"]:
             stories[i] = {**s, **entry}   # update in place, keep original recorded_at as first_seen below
             stories[i].setdefault("first_seen", s.get("recorded_at"))
             break
@@ -350,6 +392,54 @@ def record_story(story: dict, status: str = "seen",
         stories.append(entry)
     ledger["stories"] = stories[-400:]  # cap the file size
     _save_ledger(ledger)
+
+
+def find_companion_video_id(story_title: str, want_fmt: str) -> str | None:
+    """FIX-077: the already-shipped sibling video for this story
+    (short↔doc bridge). Returns its YouTube video id or None."""
+    key = _story_key(story_title or "")
+    if not key:
+        return None
+    for s in _load_ledger().get("stories", []):
+        if (s.get("key") == key and s.get("video_id")
+                and s.get("fmt") == want_fmt):
+            return s["video_id"]
+    return None
+
+
+_QUEUE_PATH = Path("output") / "PUBLISH_QUEUE.md"
+
+
+def append_publish_queue(story_title: str, fmt: str, video_id: str,
+                         packaged_title: str | None = None) -> None:
+    """FIX-078: the publish fast-path. Unlisted videos get ZERO algorithm
+    distribution — a short that waits days to be published has lost its
+    viral window (our shorts do their views in the first 24-48h). Each
+    upload appends a row with a Studio link and a publish-by deadline
+    (upload + 6h) so the operator reviews within hours, not days."""
+    try:
+        now = _now_utc()
+        deadline = now + timedelta(hours=6)
+        fmt_label = "8-min doc" if fmt == "longform" else "Short"
+        pin_note = ("pin the bridge comment (link the Short)"
+                    if fmt == "longform"
+                    else "pin the bridge comment after the doc ships (or later today)")
+        row = (f"| {deadline.strftime('%b %d %H:%M UTC')} (+6h) "
+               f"| {fmt_label} | {(packaged_title or story_title or '')[:60]} "
+               f"| [Studio](https://studio.youtube.com/video/{video_id}/edit) "
+               f"| [watch](https://youtu.be/{video_id}) | {pin_note} |\n")
+        _QUEUE_PATH.parent.mkdir(exist_ok=True)
+        if not _QUEUE_PATH.exists():
+            _QUEUE_PATH.write_text(
+                "# PUBLISH QUEUE — review & publish within 6h of upload\n\n"
+                "Unlisted videos earn nothing. Publish-by is upload time + 6h.\n\n"
+                "| publish-by | format | title | review | watch | pin |\n"
+                "|---|---|---|---|---|---|\n",
+                encoding="utf-8")
+        with open(_QUEUE_PATH, "a", encoding="utf-8") as f:
+            f.write(row)
+    except Exception:
+        pass   # the queue must never break a production run
 
 
 def record_run(story: dict, project_dir: str | None, video_id: str | None,

@@ -31,7 +31,7 @@
   },
   "voice": {
     "provider": "edge-tts",
-    "voice_id": "en-US-EricNeural",
+    "voice_id": "en-US-BrianMultilingualNeural",
     "rate": "+10%",
     "pitch": "+1Hz"
   },

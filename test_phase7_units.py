@@ -7,10 +7,13 @@ Covers:
   7.2  ASS caption band: vertical default is the bottom band; per-scene lift
   7.3  assembler band map: computed from rendered clips + QC overrides
   7.4  QC repair: caption findings move the band instead of re-rolling the visual
+  7.10 lane lock + publish queue + companion bridge (FIX-077/078/079)
+  7.11 voice/music de-AI pass (FIX-075/076): pitch jitter, mix graph, voices
 """
 
 import sys
 import json
+import re
 import tempfile
 from pathlib import Path
 
@@ -415,6 +418,105 @@ try:
     check("sweeper deletes the file when nothing is live", not p.exists())
 finally:
     os.chdir(_cwd)
+
+
+# ── 7.10 lane lock + publish queue + companion bridge (FIX-077/078/079) ─
+print("\n[7.10] lane lock, publish queue, companion bridge")
+import pipeline.trending_news as TN
+
+in_lane = {"title": "Taylor Swift's lawyers hit back at Drake in new feud filing",
+           "source": "Billboard", "published": "", "url": "x"}
+out_lane_weak = {"title": "A quiet weekend for the cast of a small streaming show",
+                 "source": "Yahoo", "published": "", "url": "y"}
+strong_out = {"title": "Billionaire pop mogul's arrest shocks the industry; lawyers respond",
+              "source": "TMZ", "published": "", "url": "z"}
+
+gated = TN._lane_gate([
+    {**in_lane, "score": 2.0},       # in-lane, weak score -> kept
+    {**out_lane_weak, "score": 2.0}, # out-of-lane, weak -> dropped
+    {**strong_out, "score": 5.1},    # out-of-lane, exceptional -> kept
+], enabled=True)
+check("lane gate keeps in-lane items", any(it["title"] == in_lane["title"] for it in gated))
+check("lane gate drops weak out-of-lane items", not any(it["title"] == out_lane_weak["title"] for it in gated))
+check("lane gate keeps exceptional out-of-lane items", any(it["title"] == strong_out["title"] for it in gated))
+check("lane gate disabled passes everything through",
+      len(TN._lane_gate([{**out_lane_weak, "score": 0.5}], enabled=False)) == 1)
+check("lane hit detector matches names and drama",
+      TN._lane_hits("Travis Kelce feud with 50 Cent escalates") >= 2)
+
+# bridge comment text: short points to the doc, doc points to the short
+from pipeline.uploader import _companion_comment_text
+short_txt = _companion_comment_text("https://youtu.be/DOC123", companion_is_doc=True)
+doc_txt = _companion_comment_text("https://youtu.be/SHORT123", companion_is_doc=False)
+check("bridge on short points to the full doc", "DOC123" in short_txt and "FULL story" in short_txt)
+check("bridge on doc points to the short", "SHORT123" in doc_txt and "45-second" in doc_txt)
+
+# publish queue: rows append with a +6h deadline and Studio link
+_qdir = TMP / "queue_test"
+_qdir.mkdir(exist_ok=True)
+_os_cwd = os.getcwd()
+try:
+    os.chdir(_qdir)
+    TN._QUEUE_PATH = _qdir / "output" / "PUBLISH_QUEUE.md"
+    TN.append_publish_queue("Taylor Swift feud story", "short", "abc123XYZ",
+                            packaged_title="Taylor Swift Just Ended This Feud")
+    TN.append_publish_queue("Taylor Swift feud story", "longform", "doc456XYZ")
+    q = TN._QUEUE_PATH.read_text(encoding="utf-8")
+    check("queue header written", "PUBLISH QUEUE" in q and "publish-by" in q)
+    check("queue row has Studio link + deadline", "studio.youtube.com/video/abc123XYZ/edit" in q)
+    check("queue marks doc rows as 8-min", "8-min doc" in q)
+    check("queue row references bridge pinning", "bridge comment" in q)
+finally:
+    os.chdir(_os_cwd)
+
+# ledger fmt + companion lookup (short↔doc pairing)
+_led_dir = TMP / "ledger_test"
+_led_dir.mkdir(exist_ok=True)
+try:
+    os.chdir(_led_dir)
+    TN._QUEUE_PATH = _led_dir / "output" / "PUBLISH_QUEUE.md"
+    TN.record_story({"title": "Drake and Kendrick escalate the beef", "url": "", "source": "",
+                     "published": ""}, status="used", channel="famefiles",
+                    video_id="SHORTid111", project_dir=None, fmt="short")
+    TN.record_story({"title": "Drake and Kendrick escalate the beef", "url": "", "source": "",
+                     "published": ""}, status="used", channel="famefiles",
+                    video_id="DOCid222", project_dir=None, fmt="longform")
+    check("companion lookup finds the short for the doc",
+          TN.find_companion_video_id("Drake and Kendrick escalate the beef", "short") == "SHORTid111")
+    check("companion lookup finds the doc for the short",
+          TN.find_companion_video_id("Drake and Kendrick escalate the beef", "longform") == "DOCid222")
+    check("companion lookup returns None for unknown story",
+          TN.find_companion_video_id("A story we never covered", "short") is None)
+finally:
+    os.chdir(_cwd)
+
+
+# ── 7.11 voice/music de-AI pass (FIX-075/076) ─────────────────────────
+print("\n[7.11] voice + music de-AI")
+import inspect
+from utils.ffmpeg_cmd import mix_audio_with_music as _mixfn
+_mix_src = inspect.getsource(_mixfn)
+check("mix default bed lowered to -24 dB", "music_volume_db: float = -24" in _mix_src)
+check("mix ducker deepened (ratio 14)", "ratio=14" in _mix_src)
+check("voice chain loudness-normalized", "loudnorm=I=-16" in _mix_src)
+check("final limiter present in all branches", _mix_src.count("alimiter=limit=0.971") == 4)
+check("no [out] emitted without passing the limiter",
+      not re.search(r"\[voice\]\[music\]amix[^\"]*\[out\]", _mix_src))
+
+from pipeline import voice as _voice
+_vs = inspect.getsource(_voice)
+check("pitch jitter around template base (FIX-075)", "pitch_jitter" in _vs and "base_pitch_val" in _vs)
+check("default voice is the Conversation-class Andrew",
+      _vs.count("en-US-AndrewMultilingualNeural") >= 2 and "en-US-GuyNeural" not in _vs)
+import templates as _  # noqa: F401  (templates dir sanity; JSON checked below)
+_tj = json.loads((Path(__file__).parent / "templates" / "celebrity_8min.json").read_text(encoding="utf-8"))
+_tf = json.loads((Path(__file__).parent / "templates" / "famefiles_trending.json").read_text(encoding="utf-8"))
+check("doc template on AndrewMultilingual", _tj["voice"]["voice_id"] == "en-US-AndrewMultilingualNeural")
+check("famefiles short template on AvaMultilingual",
+      _tf["voice"]["voice_id"] == "en-US-AvaMultilingualNeural")
+_no_guy = [p.name for p in (Path(__file__).parent / "templates").glob("*.json")
+           if "GuyNeural" in p.read_text(encoding="utf-8") or "EricNeural" in p.read_text(encoding="utf-8")]
+check("no News-class voices left in templates", _no_guy == [], str(_no_guy))
 
 print(f"\n{'='*50}\nRESULT: {sum(1 for _, ok, _ in RESULTS if ok)} passed, "
       f"{sum(1 for _, ok, _ in RESULTS if not ok)} failed")

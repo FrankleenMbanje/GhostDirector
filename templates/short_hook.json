@@ -26,7 +26,7 @@
 
   "voice": {
     "provider": "edge-tts",
-    "voice_id": "en-US-GuyNeural",
+    "voice_id": "en-US-AndrewMultilingualNeural",
     "rate": "+15%",
     "pitch": "+2Hz"
   },
