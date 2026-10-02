@@ -714,6 +714,58 @@ check("scheduler runs daily intel",
       "_run_intel" in _sched_src2 and "_daily_intel.txt" in _sched_src2)
 check("workflow surfaces the intel report", "_daily_intel.txt" in _wf)
 
+# ── 7.16 real-audio hook intro (FIX-085) ────────────────────────────
+print("\n[7.16] real-audio hook intro (FIX-085)")
+from pipeline.trending_short import hook_query_for as _hqf
+
+check("hook subject found in a known-name story",
+      _hqf("Taylor Swift Just Broke Hollywood With This Trailer") == "Taylor Swift")
+check("hook skipped when no known subject",
+      _hqf("A quiet weekend for a small show") is None)
+_as_src = (Path(__file__).parent / "pipeline" / "assets.py").read_text(encoding="utf-8")
+check("clip downloader can keep audio when asked", "keep_audio" in _as_src)
+check("hook fetch rejects clips without audio",
+      "has no audio track" in _as_src and "fetch_hook_clip" in _as_src)
+_ff_src = (Path(__file__).parent / "utils" / "ffmpeg_cmd.py").read_text(encoding="utf-8")
+check("hook splice = stream copy + re-encode fallback",
+      "prepend_hook_intro" in _ff_src and "veryfast" in _ff_src)
+check("hook failure never costs the video",
+      "shipping without the hook" in _ff_src)
+
+# Real-ffmpeg integration: normalize + copy-concat preserves both streams
+import subprocess as _subp
+import config as _cfg2
+_tmpdir = TMP / "hook_splice"
+_tmpdir.mkdir(exist_ok=True)
+
+
+def _mk(path, freq, dur):
+    _subp.run([getattr(_cfg2, "FFMPEG_BIN", "ffmpeg"), "-y", "-v", "error",
+               "-f", "lavfi", "-i", f"color=c=blue:s=320x240:r=30:d={dur}",
+               "-f", "lavfi", "-i",
+               f"sine=frequency={freq}:duration={dur}:sample_rate=44100",
+               "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+               "-ar", "44100", "-ac", "2", "-shortest", str(path)],
+              capture_output=True)
+
+
+_hook = _tmpdir / "hook.mp4"
+_main = _tmpdir / "main.mp4"
+_mk(_hook, 440, 0.6)
+_mk(_main, 880, 0.8)
+from utils.ffmpeg_cmd import prepend_hook_intro as _pre, get_duration as _gd
+_out = _pre(_hook, _main)
+check("splice produces a new file", Path(_out) != Path(_main) and Path(_out).exists())
+check("splice duration = hook + main",
+      abs(_gd(_out) - (_gd(_hook) + _gd(_main))) < 0.35)
+check("splice result keeps an audio stream",
+      "audio" in _subp.run([getattr(_cfg2, "FFPROBE_BIN", "ffprobe"), "-v", "quiet",
+                           "-select_streams", "a", "-show_entries",
+                           "stream=codec_type", "-of", "csv=p=0", str(_out)],
+                          capture_output=True, text=True).stdout)
+check("splice keeps the main video intact (stream copy)",
+      _out.stat().st_size >= _main.stat().st_size * 0.5)
+
 print(f"\n{'='*50}\nRESULT: {sum(1 for _, ok, _ in RESULTS if ok)} passed, "
       f"{sum(1 for _, ok, _ in RESULTS if not ok)} failed")
 sys.exit(0 if all(ok for _, ok, _ in RESULTS) else 1)

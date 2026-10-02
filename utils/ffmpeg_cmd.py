@@ -627,6 +627,98 @@ def concat_videos(input_paths: list[Path], output_path: Path) -> None:
     concat_file.unlink(missing_ok=True)
 
 
+def _probe_av_params(path: Path) -> tuple[dict, dict]:
+    """ffprobe -> (video, audio) params, so a spliced hook can match the
+    finished render EXACTLY (same codec profile, size, fps, pix_fmt, sample
+    rate, channels) and the concat stays a lossless stream copy."""
+    import json as _json
+    ffprobe_bin = getattr(config, "FFPROBE_BIN", "ffprobe")
+    out = subprocess.run(
+        [ffprobe_bin, "-v", "quiet", "-print_format", "json",
+         "-show_streams", str(path)], capture_output=True, text=True)
+    streams = _json.loads(out.stdout or "{}").get("streams", [])
+    v: dict = {}
+    a: dict = {}
+    for s in streams:
+        if s.get("codec_type") == "video" and not v:
+            num, _, den = (s.get("r_frame_rate") or "30/1").partition("/")
+            try:
+                fps = float(num) / float(den or 1)
+            except (ValueError, ZeroDivisionError):
+                fps = 30.0
+            v = {"w": int(s.get("width") or 0), "h": int(s.get("height") or 0),
+                 "fps": round(fps, 3), "pix_fmt": s.get("pix_fmt") or "yuv420p"}
+        elif s.get("codec_type") == "audio" and not a:
+            a = {"sample_rate": int(s.get("sample_rate") or 48000),
+                 "channels": int(s.get("channels") or 2)}
+    return v, a
+
+
+def prepend_hook_intro(hook_path: Path, main_path: Path,
+                       output_path: Path | None = None) -> Path:
+    """FIX-085: splice a REAL clip (with its own audio) in front of the
+    finished render — the interview-hook edit language the operator asked
+    for ("leave the video play with its audio for maybe 3 seconds").
+
+    The hook is normalized to EXACTLY the main render's probed parameters,
+    then concatenated with a STREAM COPY: the finished video is never
+    re-encoded (zero generation loss) — only the hook is. Falls back to a
+    re-encode concat if the copy path is rejected, and returns main_path
+    unchanged if even that fails: a hook must never cost the video.
+    """
+    hook_path, main_path = Path(hook_path), Path(main_path)
+    output_path = (Path(output_path) if output_path else
+                   main_path.with_name(f"{main_path.stem}_hooked{main_path.suffix}"))
+    if not hook_path.exists() or hook_path.stat().st_size == 0:
+        return main_path
+    v, a = _probe_av_params(main_path)
+    if not v.get("w") or not v.get("h"):
+        return main_path
+    pix = v["pix_fmt"] if v["pix_fmt"] in ("yuv420p", "yuvj420p") else "yuv420p"
+    tmp_hook = main_path.parent / "_hook_norm.mp4"
+    vf = (f"scale={v['w']}:{v['h']}:force_original_aspect_ratio=increase,"
+          f"crop={v['w']}:{v['h']},fps={v['fps']}")
+    try:
+        run_ffmpeg(["-i", str(hook_path), "-vf", vf,
+                    "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+                    "-pix_fmt", pix,
+                    "-c:a", "aac", "-b:a", "128k",
+                    "-ar", str(a.get("sample_rate") or 48000),
+                    "-ac", str(a.get("channels") or 2),
+                    str(tmp_hook)], "Normalize hook clip")
+    except RuntimeError as e:
+        log.warning(f"Hook normalize failed ({e}) — shipping without the hook")
+        return main_path
+    main_dur, hook_dur = get_duration(main_path), get_duration(tmp_hook)
+    try:
+        concat_videos([tmp_hook, main_path], output_path)
+    except Exception as e:
+        log.warning(f"Hook concat (stream copy) failed ({e}); re-encoding once")
+        list_file = main_path.parent / "_hook_concat.txt"
+        list_file.write_text(
+            "\n".join(f"file '{Path(p).resolve()}'" for p in (tmp_hook, main_path)),
+            encoding="utf-8")
+        try:
+            run_ffmpeg(["-f", "concat", "-safe", "0", "-i", str(list_file),
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                        "-pix_fmt", pix, "-c:a", "aac", "-b:a", "160k",
+                        str(output_path)], "Concat hook (re-encode)")
+        except RuntimeError as e2:
+            log.warning(f"Hook concat failed entirely ({e2}) — shipping without the hook")
+            return main_path
+        finally:
+            list_file.unlink(missing_ok=True)
+    tmp_hook.unlink(missing_ok=True)
+    got = get_duration(output_path)
+    if got < main_dur + hook_dur * 0.5:
+        log.warning(f"Hook splice looks wrong ({got:.1f}s vs expected "
+                    f"{main_dur + hook_dur:.1f}s) — shipping the un-hooked file")
+        return main_path
+    log.info(f"Hook intro spliced: +{hook_dur:.1f}s of real clip audio "
+             f"({main_dur:.1f}s -> {got:.1f}s)")
+    return output_path
+
+
 def add_audio_to_video(
     video_path: Path,
     audio_path: Path,

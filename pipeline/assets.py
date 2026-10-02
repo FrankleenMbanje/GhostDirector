@@ -911,11 +911,24 @@ def _fmt_hms(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+def _ytdlp_compat_args() -> list[str]:
+    """FIX-085: YouTube signature solving needs a JS runtime, and only deno
+    is enabled by default (observed live: search returned metadata, downloads
+    hung until killed). Node is present on the GitHub runner and on dev
+    machines, so declare it; add the EJS solver component and a socket
+    timeout so a stuck connection fails fast instead of hanging a run."""
+    args = ["--socket-timeout", "20", "--remote-components", "ejs:github"]
+    if shutil.which("node"):
+        args += ["--js-runtimes", "node"]
+    return args
+
+
 async def download_youtube_clip(
     query: str,
     output_path: Path,
     max_clip_seconds: float = 6.0,
     seed: int = 0,
+    keep_audio: bool = False,
 ) -> dict | None:
     """
     Download a SHORT excerpt from the top YouTube search result.
@@ -947,6 +960,7 @@ async def download_youtube_clip(
         cmd = [
             sys.executable, "-m", "yt_dlp",
             "--dump-single-json", "--no-playlist", "--quiet",
+            *_ytdlp_compat_args(),
             f"ytsearch1:{query}"
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
@@ -981,15 +995,24 @@ async def download_youtube_clip(
     end = start + max_clip_seconds
 
     url = meta.get("webpage_url") or meta.get("original_url") or f"ytsearch1:{query}"
+    # FIX-050: VIDEO-ONLY is the default — no +bestaudio, so the downloaded
+    # file has no audio track at all (Content ID matches audio far more often
+    # than picture). FIX-085: keep_audio=True is used ONLY for the ≤3.2s hook
+    # intro, where the editorial instruction is that the subject actually
+    # speaks before the narration starts.
+    if keep_audio:
+        fmt = ("bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/"
+               "bestvideo[height<=1080]+bestaudio/best[ext=mp4][height<=1080]/best")
+    else:
+        fmt = ("bestvideo[ext=mp4][height<=1080]/bestvideo[height<=1080]/"
+               "bestvideo/best[ext=mp4][height<=1080]")
     cmd = [
         sys.executable, "-m", "yt_dlp",
-        # FIX-050: VIDEO-ONLY formats — no +bestaudio, so the downloaded file
-        # has no audio track at all. Muted source + ≤6s excerpt + per-cut fair-
-        # use transforms + credit ledger = the safe-excerpt recipe.
-        "-f", "bestvideo[ext=mp4][height<=1080]/bestvideo[height<=1080]/bestvideo/best[ext=mp4][height<=1080]",
+        "-f", fmt,
         "--download-sections", f"*{_fmt_hms(start)}-{_fmt_hms(end)}",
         "--force-keyframes-at-cuts",
         "--no-playlist", "--quiet",
+        *_ytdlp_compat_args(),
         "-o", str(output_path),
         url,
     ]
@@ -1019,6 +1042,52 @@ async def download_youtube_clip(
     except Exception:
         pass
     return provenance
+
+
+async def fetch_hook_clip(query: str, project_dir: Path, seconds: float = 3.2,
+                          seed: int = 7, budget_s: float = 150.0) -> dict | None:
+    """FIX-085: a REAL clip of the subject, WITH its own audio, for the hook.
+
+    Tries interview-flavored searches in order. The audio IS the point, so a
+    download without an audio stream is rejected and the next query tried.
+    Returns provenance (with the search used) or None; the file lands at
+    scenes/hook_intro_raw.mp4. Callers only use this when the story names a
+    known subject (trending_short.hook_query_for enforces that).
+
+    Hard time budget (local networks have been observed to hang yt-dlp for
+    minutes on YouTube bot-checks, 2026-10-02): the hook is a NON-FATAL
+    enhancement and must never delay a production run.
+    """
+    import time as _time
+    deadline = _time.monotonic() + budget_s
+    out = Path(project_dir) / "scenes" / "hook_intro_raw.mp4"
+    for suffix in ("interview", "speaks"):
+        if _time.monotonic() >= deadline:
+            logger.warning("Hook fetch budget exhausted — skipping the hook")
+            break
+        prov = await download_youtube_clip(f"{query} {suffix}", out,
+                                           max_clip_seconds=seconds,
+                                           seed=seed, keep_audio=True)
+        if prov is None:
+            continue
+        try:
+            ffprobe_bin = getattr(config, "FFPROBE_BIN", "ffprobe")
+            res = subprocess.run(
+                [ffprobe_bin, "-v", "quiet", "-select_streams", "a",
+                 "-show_entries", "stream=codec_type", "-of", "csv=p=0",
+                 str(out)], capture_output=True, text=True)
+            if "audio" in (res.stdout or ""):
+                prov = dict(prov)
+                prov["hook_query"] = f"{query} {suffix}"
+                prov["hook_seconds"] = seconds
+                logger.info(f"Hook clip ready: {(prov.get('title') or '?')[:60]}")
+                return prov
+            logger.warning("Hook clip has no audio track — trying the next query")
+            out.unlink(missing_ok=True)
+        except Exception as e:
+            logger.warning(f"Hook clip audio probe failed ({e})")
+            out.unlink(missing_ok=True)
+    return None
 
 
 # ─────────────────────────────────────────────────

@@ -196,6 +196,22 @@ async def list_candidates(top: int | None = None) -> list[dict]:
     return await discover_trending(limit=top or config.TRENDING_TOP_N)
 
 
+def hook_query_for(story_title: str) -> str | None:
+    """FIX-085: the subject for the real-footage hook — the first known name
+    in the story title (the same _BOOST_NAMES list the funnel scores with).
+    None when the story names nobody safely searchable, so the hook step
+    never fetches a random stranger's video."""
+    try:
+        from pipeline.trending_news import _BOOST_NAMES
+    except Exception:
+        return None
+    title = (story_title or "").lower()
+    for name in _BOOST_NAMES:
+        if name.lower() in title:
+            return name
+    return None
+
+
 # ──────────────────────────────────────────────
 # Production
 # ──────────────────────────────────────────────
@@ -260,6 +276,8 @@ async def run_trending_short(
               if channel == config.CHANNEL_FAMEFILES 
               else f"{channel} — trending news short")
     say(f"\n[bold magenta]═══ {banner} ═══[/bold magenta]")
+
+    hook_prov = None
 
     # ── Resume: pin the story to the interrupted project ──
     # FIX: a resume that auto-picks a *fresh* story pairs it with the OLD
@@ -514,6 +532,31 @@ async def run_trending_short(
     recorder.qc(project_dir)
     if shippable:
         say(f"[green]OK[/green] Final QC pass{': ' + '; '.join(qc_issues) if qc_issues else ''}\n")
+        # FIX-085: real-footage hook — the subject actually speaking, with the
+        # clip's OWN audio, ~3 seconds in front of the short (operator's edit-
+        # language ask). Normalized + spliced as a stream copy; any failure
+        # ships the un-hooked render instead. Shorts only; vertical only.
+        if _is_vertical:
+            try:
+                hq = hook_query_for((story or {}).get("title") or script.title or "")
+                if hq:
+                    from pipeline.assets import fetch_hook_clip
+                    hook_prov = await fetch_hook_clip(hq, project_dir)
+                    if hook_prov:
+                        from utils.ffmpeg_cmd import prepend_hook_intro
+                        hooked = prepend_hook_intro(
+                            project_dir / "scenes" / "hook_intro_raw.mp4",
+                            Path(final_video))
+                        if str(hooked) != str(final_video):
+                            final_video = hooked
+                        say(f"[dim]Real-audio hook: "
+                            f"{(hook_prov.get('title') or '?')[:60]}[/dim]")
+                else:
+                    say("[dim]No known subject in the story — skipping the "
+                        "real-audio hook[/dim]")
+            except Exception as e:
+                log.warning(f"Hook step failed (non-fatal): {e}")
+                hook_prov = None
     else:
         recorder.fail("final QC failed: " + "; ".join(qc_issues)[:300])
         say(f"[bold red]✗ Final QC FAILED:[/bold red] {qc_issues}")
@@ -532,6 +575,10 @@ async def run_trending_short(
     meta = generate_metadata(script, template, project_dir)
     meta = _override_metadata(meta, script, story, channel=channel,
                               longform=longform)
+    if hook_prov:
+        # Provenance for the fair-use hook excerpt (also in
+        # scenes/hook_intro_raw.source.json).
+        meta["hook_clip_provenance"] = hook_prov
     (project_dir / "metadata.json").write_text(
         json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
 
