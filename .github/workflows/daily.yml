@@ -176,7 +176,9 @@ jobs:
           path: |
             output/_daily.log
             output/_daily_result.txt
+            output/_daily_intel.txt
             output/PUBLISH_QUEUE.md
+            db/channel_memory.json
             output/**/metadata.json
             output/**/final_qc_report.json
           retention-days: 7
@@ -198,5 +200,10 @@ jobs:
             if [ -f output/PUBLISH_QUEUE.md ]; then
               echo "## 📢 Verify + pin (videos are PUBLIC — check playback, pin the bridge comment)"
               cat output/PUBLISH_QUEUE.md
+            fi
+            if [ -f output/_daily_intel.txt ]; then
+              echo "## 🧠 Daily intel (learning + diagnosis)"
+              head -c 6000 output/_daily_intel.txt
+              echo
             fi
           } >> "$GITHUB_STEP_SUMMARY"

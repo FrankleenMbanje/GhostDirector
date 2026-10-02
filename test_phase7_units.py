@@ -642,6 +642,78 @@ check("ad-hoc duplicate is a warning, not a hard stop",
       "producing anyway" in _ts_src)
 check("workflow passes GD_ADHOC in single_short mode", "GD_ADHOC=1" in _wf)
 
+# ── 7.14 channel memory: learn from every video, manual included (FIX-083) ─
+print("\n[7.14] channel memory (FIX-083)")
+from pipeline import channel_memory as CM
+
+check("short/long split at 65s", CM.fmt_from_seconds(55) == "short" and
+      CM.fmt_from_seconds(120) == "long")
+check("unknown duration classified", CM.fmt_from_seconds(0) == "unknown")
+check("automated uploads detected by the CC-BY credit",
+      CM.origin_of("Some title", "Music: Kevin MacLeod (incompetech.com)") == "automated")
+check("manual uploads detected",
+      CM.origin_of("The 2Pac Story", "made by hand") == "manual")
+check("shorts suffix counts as automated",
+      CM.origin_of("Headline #shorts", "") == "automated")
+_tf = CM.title_features("Why DRAKE Lost 3 Deals: The Truth?")
+check("title features extract pattern flags", bool(_tf["has_question"] and _tf["has_colon"]
+      and _tf["has_number"] and _tf["caps_words"] >= 1))
+
+_rows = [
+    {"format": "short", "origin": "automated", "views": 1000, "engagement": 0.02,
+     "lane_hits": 2, "features": {"has_question": False, "has_number": False,
+                                    "has_colon": False, "caps_words": 0}},
+    {"format": "short", "origin": "automated", "views": 2000, "engagement": 0.03,
+     "lane_hits": 1, "features": {"has_question": True, "has_number": False,
+                                    "has_colon": False, "caps_words": 1}},
+    {"format": "long", "origin": "manual", "views": 16, "engagement": 0.06,
+     "lane_hits": 3, "features": {"has_question": False, "has_number": False,
+                                   "has_colon": True, "caps_words": 0}},
+]
+_agg = CM.aggregate(_rows)
+check("aggregate counts automated vs manual",
+      _agg["n_automated"] == 2 and _agg["n_manual"] == 1)
+check("aggregate medians per format",
+      _agg["shorts"]["median_views"] == 1500.0 and _agg["longs"]["median_views"] == 16.0)
+check("title buckets computed for shorts",
+      _agg["title_buckets_shorts"]["has_question"]["True"]["median_views"] == 2000.0)
+check("manual long-form stays visible in the report",
+      "manual" in CM.render_report({**_agg, "channel": "famefiles"}))
+
+# ── 7.15 daily diagnosis + monetization gap (FIX-084) ────────────────
+print("\n[7.15] daily diagnosis + monetization gap (FIX-084)")
+from pipeline import diagnose as DG
+
+_d = DG.parse_daily_result("result=PARTIAL\nshorts=2/3\ndoc=failed\n")
+check("daily result parsed",
+      _d["result"] == "PARTIAL" and _d["shorts"] == "2/3" and _d["doc"] == "failed")
+check("daily result parser tolerates junk", DG.parse_daily_result("garbage") == {})
+
+_gap = DG.monetization_gap({"subscribers": 11, "total_views": 6641}, 500.0)
+check("gap counts subs to go", _gap["subs_to_go"] == 989)
+check("gap counts views to go", _gap["views_to_go"] == 10_000_000 - 6641)
+check("gap computes required pace", _gap["required_rate"] > 100_000)
+check("gap ETA at pace", _gap["eta_days"] == round((10_000_000 - 6641) / 500.0))
+check("gap flags off-track", _gap["on_track"] is False)
+
+_lines = DG.diagnose(
+    {"result": "PARTIAL", "shorts": "2/3", "doc": "failed"},
+    memory={"shorts": {"n": 10, "median_views": 1043.5},
+            "longs": {"n": 6, "median_views": 17.0}, "rows": [],
+            "channel_stats": {"subscribers": 11, "total_views": 6641}},
+    queued_topics=["Drake lawsuit update"])
+_blob = "\n".join(_lines)
+check("diagnosis names the failed doc stage", "doc stage failed" in _blob)
+check("diagnosis states the monetization gap",
+      "MONETIZATION" in _blob and "989 subs to go" in _blob)
+check("diagnosis surfaces competitor topics", "Drake lawsuit update" in _blob)
+check("diagnosis keeps docs in perspective", "watch-time experiments" in _blob)
+
+_sched_src2 = (Path(__file__).parent / "storage" / "scheduler.py").read_text(encoding="utf-8")
+check("scheduler runs daily intel",
+      "_run_intel" in _sched_src2 and "_daily_intel.txt" in _sched_src2)
+check("workflow surfaces the intel report", "_daily_intel.txt" in _wf)
+
 print(f"\n{'='*50}\nRESULT: {sum(1 for _, ok, _ in RESULTS if ok)} passed, "
       f"{sum(1 for _, ok, _ in RESULTS if not ok)} failed")
 sys.exit(0 if all(ok for _, ok, _ in RESULTS) else 1)

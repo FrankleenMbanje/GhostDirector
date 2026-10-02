@@ -540,13 +540,14 @@ async def run_pipeline(
 @click.option("--find-competitors", "find_competitors", is_flag=True, help="Discover competitor channels for your niche (A10; combine with --niche)")
 @click.option("--niche", default=None, help="Niche string for --find-competitors and thumbnail style ranking (overrides db/channel_profile.json)")
 @click.option("--compare", "compare_flag", is_flag=True, help="My channel vs the competitor watch-list: subs, videos, efficiency (A10)")
+@click.option("--channel-memory", "channel_memory_flag", is_flag=True, help="Learn from EVERY video on the channel (manual + automated): packaging features + outcomes -> db/channel_memory.json")
 @click.option("--thumbnails", "thumbnails_project", type=click.Path(exists=True, file_okay=False), metavar="PROJECT_DIR", help="Re-run the thumbnail style matrix on an existing project (A9)")
 @click.option("--styles", default=None, metavar="ID,ID,...", help="With --thumbnails: comma-separated style ids to render (default: recommended for the niche)")
 @click.option("--pick", "pick_out", type=click.Path(), metavar="OUT.png", help="With --thumbnails: also write the chosen composite as OUT.png")
 @click.option("--daily", "daily_flag", is_flag=True, help="Run today's Fame Files production (idempotent — safe to re-run; needs DATABASE_URL for run locking)")
 @click.option("--status", "status_flag", is_flag=True, help="Show production status from the database (runs, uploads, schedules)")
 @click.option("--schedule-loop", "schedule_loop", is_flag=True, help="Run the persistent daily-10:00 Africa/Harare scheduler loop in this process")
-def main(topic, template, tts, mode, shorts, review, auto, batch, upload, force_upload, push_resolve, resolve_render, no_auto_resolve, privacy, channel, resume_dir, sync_analytics, import_ctr, scout, add_competitor, next_topic_flag, ab_video_id, ab_project, title_index, thumb_file, ab_leaderboard, audit, find_competitors, niche, compare_flag, thumbnails_project, styles, pick_out, trending_flag, trending_list, trending_story, longform_flag, no_upload, daily_flag, status_flag, schedule_loop):
+def main(topic, template, tts, mode, shorts, review, auto, batch, upload, force_upload, push_resolve, resolve_render, no_auto_resolve, privacy, channel, resume_dir, sync_analytics, import_ctr, scout, add_competitor, next_topic_flag, ab_video_id, ab_project, title_index, thumb_file, ab_leaderboard, audit, find_competitors, niche, compare_flag, channel_memory_flag, thumbnails_project, styles, pick_out, trending_flag, trending_list, trending_story, longform_flag, no_upload, daily_flag, status_flag, schedule_loop):
     """GhostDirector — Automated Faceless YouTube Video Factory.
 
     Production: python main.py "TOPIC" --template celebrity_4min --shorts
@@ -778,6 +779,14 @@ def main(topic, template, tts, mode, shorts, review, auto, batch, upload, force_
                 str(r.get("views_per_sub", "—")),
             )
         console.print(table)
+        return
+    if channel_memory_flag:
+        from pipeline.channel_memory import build_memory, render_report
+        mem_channel = (channel if channel in (config.CHANNEL_FAMEFILES,
+                                              config.CHANNEL_RISEANDRUIN)
+                       else config.CHANNEL_FAMEFILES)
+        memory = build_memory(channel=mem_channel)
+        console.print(render_report(memory))
         return
     if ab_video_id:
         from pipeline.abtest import ab_set

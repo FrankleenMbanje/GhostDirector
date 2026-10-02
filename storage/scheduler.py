@@ -12,6 +12,7 @@ entry that runs `python main.py --daily` at 10:00 local time. The task
 survives reboots and does not need a terminal open.
 """
 
+import json
 import os
 import sys
 import time
@@ -98,6 +99,70 @@ def _write_daily_result(result: str, shorts_ok: int, shorts_total: int,
                        f"doc={doc_state}\n", encoding="utf-8")
     except OSError:
         pass
+
+
+def _queued_topics(limit: int = 5) -> list[str]:
+    """Top topics from the competitor scan queue (db/topic_queue.json)."""
+    try:
+        data = json.loads((Path("db") / "topic_queue.json").read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    items = data.get("queue") or data.get("topics") or []
+    if isinstance(items, dict):
+        items = list(items.values())
+    topics: list[str] = []
+    for it in (items if isinstance(items, list) else []):
+        if isinstance(it, dict) and it.get("topic"):
+            topics.append(str(it["topic"]))
+        elif isinstance(it, str):
+            topics.append(it)
+    return topics[:limit]
+
+
+def _run_intel(channel: str, env: dict) -> None:
+    """FIX-084: daily intelligence after production — never fatal.
+
+    Learns from the WHOLE catalogue (manual videos included) into
+    db/channel_memory.json, refreshes the competitor outlier queue, then
+    writes a plain-language diagnosis + monetization gap to
+    output/_daily_intel.txt (surfaced in the workflow job summary).
+    GD_INTEL=0 disables it.
+    """
+    if os.environ.get("GD_INTEL", "") == "0":
+        return
+    parts: list[str] = []
+    for label, args in (("CHANNEL MEMORY (manual + automated)", ["--channel-memory"]),
+                        ("COMPETITOR SCAN (watch-list outliers)", ["--scout"])):
+        try:
+            proc = subprocess.run([sys.executable, "main.py", *args],
+                                  cwd=Path.cwd(), env=env, capture_output=True,
+                                  text=True, timeout=900)
+            body = (proc.stdout or "")[-6000:].strip()
+            if proc.returncode != 0:
+                body += f"\n[{label}] exited {proc.returncode}\n{(proc.stderr or '')[-600:]}"
+            parts.append(f"## {label}\n{body}")
+        except Exception as e:
+            parts.append(f"## {label}\nskipped ({e})")
+    try:
+        from pipeline.diagnose import diagnose, parse_daily_result
+        result_path = Path("output") / "_daily_result.txt"
+        daily = parse_daily_result(
+            result_path.read_text(encoding="utf-8") if result_path.exists() else "")
+        memory = None
+        mem_path = Path("db") / "channel_memory.json"
+        if mem_path.exists():
+            memory = json.loads(mem_path.read_text(encoding="utf-8"))
+        parts.insert(0, "## DIAGNOSIS\n" + "\n".join(
+            diagnose(daily, memory, _queued_topics())))
+    except Exception as e:
+        parts.insert(0, f"## DIAGNOSIS\nskipped ({e})")
+    try:
+        out = Path("output") / "_daily_intel.txt"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text("\n\n".join(parts), encoding="utf-8")
+        log.info("Daily intel written to output/_daily_intel.txt")
+    except OSError as e:
+        log.warning(f"Daily intel write failed: {e}")
 
 
 def _db():
@@ -215,6 +280,8 @@ def run_daily(force: bool = False, channel: str = "famefiles") -> int:
         full_ok = all(s_ok for _, s_ok in results)
         result_txt = "FULL" if full_ok else ("PARTIAL" if any_ok else "FAILED")
         _write_daily_result(result_txt, shorts_ok, shorts_total, doc_state)
+        # FIX-084: learn from the catalogue + competitors, then diagnose.
+        _run_intel(channel, env)
         if db is not None and run_id:
             if any_ok:
                 # The day shipped at least one video; the video record
