@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from models import Script, VideoProject
 import config
 from utils.logger import get_logger
+from utils.ffmpeg_cmd import get_duration
 
 logger = get_logger(__name__)
 
@@ -220,6 +221,44 @@ def _reassert_after_processing(youtube, video_id: str, privacy_status: str,
         "check `main.py --status` before relying on this video.")
 
 
+def _iso8601_seconds(value: str) -> float | None:
+    """YouTube's PT#H#M#S duration -> seconds; None when unparseable."""
+    import re as _re
+    m = _re.fullmatch(
+        r"P(?:(\d+)D)?T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?",
+        value or "")
+    if not m:
+        return None
+    d, h, mi, s = (float(x) if x else 0.0 for x in m.groups())
+    return d * 86400 + h * 3600 + mi * 60 + s
+
+
+def verify_upload_duration(video_id: str, local_seconds: float,
+                           channel: str | None = None,
+                           tolerance: float = 0.25) -> tuple[bool, str]:
+    """FIX-081: confirm the channel video matches the render we just shipped.
+
+    The FIX-054 idempotency guard can return an EXISTING video id, and a
+    same-title collision (a short and a doc on one story) once let a doc
+    stage exit 0 with NO doc on the channel (run 11, 2026-10-02). Comparing
+    the server-side duration against the local file catches both a stale
+    collision and a never-uploaded file. Unreadable durations verify as
+    True — this must never fail a legitimate retry re-upload.
+    """
+    youtube = get_authenticated_service(channel=channel)
+    items = youtube.videos().list(part="contentDetails", id=video_id
+                                  ).execute().get("items", [])
+    if not items:
+        return False, f"{video_id} not found on the channel"
+    have = _iso8601_seconds(items[0].get("contentDetails", {}).get("duration", ""))
+    if have is None or not local_seconds:
+        return True, f"{video_id}: duration unreadable — not verified"
+    if abs(have - local_seconds) / local_seconds > tolerance:
+        return False, (f"{video_id} is {have:.0f}s but the render is "
+                       f"{local_seconds:.0f}s — a different video was returned")
+    return True, f"{video_id}: {have:.0f}s matches the render"
+
+
 def upload_video(
     project_dir: Path,
     video_path: Path,
@@ -284,13 +323,34 @@ def upload_video(
         ids = [i["contentDetails"]["videoId"] for i in pl.get("items", [])]
         if ids:
             existing = youtube.videos().list(
-                part="snippet,status", id=",".join(ids)).execute()
+                part="snippet,status,contentDetails", id=",".join(ids)).execute()
+            try:
+                want_s = float(get_duration(Path(video_path)))
+            except Exception:
+                want_s = 0.0
             for v in existing.get("items", []):
-                if v["snippet"].get("title") == title:
+                if v["snippet"].get("title") != title:
+                    continue
+                have_s = _iso8601_seconds(
+                    (v.get("contentDetails") or {}).get("duration", "")) or 0.0
+                looks_dup = (not want_s or not have_s or
+                             abs(have_s - want_s) <= max(10.0, 0.25 * want_s))
+                if looks_dup:
                     logger.warning(
                         f"Upload skipped — '{title[:50]}' already on channel "
                         f"as {v['id']} ({v['status'].get('privacyStatus')})")
                     return v["id"]
+                # FIX-081: same title but a very different length = a DIFFERENT
+                # render (a short already carrying the headline must not block
+                # the 8-min doc). Upload, retitling the doc so the pair stays
+                # distinguishable on the channel.
+                if want_s >= 120:
+                    title = f"{title} (Full Story)"
+                    body["snippet"]["title"] = title
+                logger.warning(
+                    f"Same-title video {v['id']} is {have_s:.0f}s vs this "
+                    f"{want_s:.0f}s render — uploading as '{title[:60]}'")
+                break
     except Exception as e:
         logger.warning(f"Idempotency pre-check failed (uploading anyway): {e}")
 

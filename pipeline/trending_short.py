@@ -28,6 +28,7 @@ import click
 import config
 from models import Script
 from utils.logger import get_logger
+from utils.ffmpeg_cmd import get_duration
 from utils.channel_state import draw_persona, apply_persona_to_template, log_packaging
 
 log = get_logger("trending_short")
@@ -568,6 +569,22 @@ async def run_trending_short(
             privacy_status=privacy,
             channel=channel,
         )
+        # FIX-081: verify the bytes actually landed. The FIX-054 idempotency
+        # guard can hand back an existing id, and a same-title short once let
+        # a doc stage exit 0 with NO doc on the channel (run 11, 2026-10-02).
+        # A mismatch fails the stage loudly so the day reads PARTIAL
+        # (doc=failed) instead of pretending the doc shipped.
+        try:
+            from pipeline.uploader import verify_upload_duration
+            ok_u, note_u = verify_upload_duration(
+                video_id, get_duration(Path(final_video)), channel=channel)
+            if not ok_u:
+                raise RuntimeError(f"upload verification failed: {note_u}")
+            log.info(f"Upload verified — {note_u}")
+        except RuntimeError:
+            raise
+        except Exception as e:
+            log.warning(f"Upload verification skipped ({e})")
         recorder.upload(video_id, f"https://youtu.be/{video_id}", privacy)
         say(f"[green]✓ Uploaded to {channel}:[/green] https://youtu.be/{video_id} (privacy={privacy})")
 

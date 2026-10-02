@@ -583,6 +583,60 @@ check("workflow offers shorts_only mode", "shorts_only" in _wf)
 check("workflow surfaces _daily_result.txt", "_daily_result.txt" in _wf)
 check("publish queue now says PUBLIC", "PUBLIC" in inspect.getsource(TN.append_publish_queue))
 
+# ── 7.13 upload verification + duration-aware idempotency (FIX-081) ──
+print("\n[7.13] upload verification (FIX-081)")
+import pipeline.uploader as U
+
+check("ISO duration parser: minutes+seconds", U._iso8601_seconds("PT7M44S") == 464.0)
+check("ISO duration parser: seconds only", U._iso8601_seconds("PT55S") == 55.0)
+check("ISO duration parser: hours", U._iso8601_seconds("PT1H2M3S") == 3723.0)
+check("ISO duration parser rejects zero-day form", U._iso8601_seconds("P0D") is None)
+
+
+class _FakeYT:
+    def __init__(self, items):
+        self._items = items
+
+    def videos(self):
+        return self
+
+    def list(self, **kwargs):
+        return self
+
+    def execute(self):
+        return {"items": self._items}
+
+
+_orig_auth = U.get_authenticated_service
+try:
+    U.get_authenticated_service = lambda channel=None: _FakeYT(
+        [{"contentDetails": {"duration": "PT55S"}}])
+    ok_v, note_v = U.verify_upload_duration("vid123", 500.0)
+    check("verification rejects a 55s video for a 500s render",
+          not ok_v and "different video" in note_v)
+    ok_v, note_v = U.verify_upload_duration("vid123", 51.0)
+    check("verification accepts a matching render", ok_v)
+
+    U.get_authenticated_service = lambda channel=None: _FakeYT([])
+    ok_v, note_v = U.verify_upload_duration("gone", 50.0)
+    check("verification fails when the video is missing",
+          not ok_v and "not found" in note_v)
+
+    U.get_authenticated_service = lambda channel=None: _FakeYT(
+        [{"contentDetails": {}}])
+    ok_v, note_v = U.verify_upload_duration("vid123", 50.0)
+    check("unreadable duration verifies true (retry-safe)", ok_v)
+finally:
+    U.get_authenticated_service = _orig_auth
+
+_ts_src = (Path(__file__).parent / "pipeline" / "trending_short.py").read_text(encoding="utf-8")
+check("trending_short verifies every upload", "verify_upload_duration" in _ts_src)
+check("get_duration imported in trending_short",
+      "from utils.ffmpeg_cmd import get_duration" in _ts_src)
+_up_src = (Path(__file__).parent / "pipeline" / "uploader.py").read_text(encoding="utf-8")
+check("idempotency guard is duration-aware", "looks_dup" in _up_src)
+check("same-title doc gets a distinct suffix", "(Full Story)" in _up_src)
+
 print(f"\n{'='*50}\nRESULT: {sum(1 for _, ok, _ in RESULTS if ok)} passed, "
       f"{sum(1 for _, ok, _ in RESULTS if not ok)} failed")
 sys.exit(0 if all(ok for _, ok, _ in RESULTS) else 1)
