@@ -11,6 +11,7 @@ Covers:
   7.11 voice/music de-AI pass (FIX-075/076): pitch jitter, mix graph, voices
   7.18 strict celebrity gate, dead-black thumbnail guard, delivery audit
        (FIX-087/088/089)
+  7.19 self-learning: winner-riding docs + proven-name boost (FIX-091/092)
 """
 
 import sys
@@ -962,6 +963,93 @@ check("scheduler runs the delivery audit inside the daily intel",
       "delivery_audit" in _f89_sched and "DELIVERY AUDIT" in _f89_sched)
 check("workflow state cache is run-scoped (no immutable-key freeze, FIX-090)",
       "gd-state-${{ github.run_id }}" in _wf and "restore-keys" in _wf)
+
+# ── 7.19 self-learning: winner-riding docs + proven-name boost (FIX-091/092) ──
+print("\n[7.19] self-learning: winner-riding docs + proven-name boost "
+      "(FIX-091/092)")
+from pipeline.channel_memory import breakout_story as _bs91  # noqa: E402
+from pipeline.trending_short import _winner_candidate as _wc91  # noqa: E402
+import pipeline.trending_news as _TN92  # noqa: E402
+
+_f91_now = _dt.datetime(2026, 10, 4, 8, 0, tzinfo=_dt.timezone.utc)
+
+
+def _f91_row(vid, title, views, fmt="short", published="2026-10-03T14:00:00Z"):
+    return {"id": vid, "title": title, "views": views, "format": fmt,
+            "published": published}
+
+
+_f91_strong = [
+    _f91_row("w1", "Paul McCartney Reveals He Joked to Taylor Swift", 1863),
+    _f91_row("w2", "Travis Kelce Get Great News Before Chiefs Game", 1589),
+    _f91_row("s3", "Taylor Swift Charts Again", 335),
+    _f91_row("s4", "Kanye West Russia Shows Cancelled", 89),
+    _f91_row("s5", "Tom Cruise Still Chasing His Oscar", 1444),
+    _f91_row("s6", "Blake Lively Follows Taylor Swift", 1355),
+]
+_w91 = _bs91(_f91_strong, now=_f91_now)
+check("breakout picks the top recent short", bool(_w91) and _w91["id"] == "w1")
+check("breakout refuses a weak week (absolute floor)",
+      _bs91([_f91_row(f"x{i}", f"Story number {i}", 300) for i in range(6)],
+            now=_f91_now) is None)
+check("breakout ignores old shorts outside the window",
+      _bs91([_f91_row("old", "Old winner stays old", 9999,
+                      published="2026-09-01T00:00:00Z")], now=_f91_now) is None)
+check("breakout never rides long-form",
+      _bs91([_f91_row("doc", "Big documentary story", 9999, fmt="long")],
+            now=_f91_now) is None)
+_m91 = _bs91(
+    [_f91_row("m1", "Travis Kelce Owes Wife Big Time", 1610)]
+    + [_f91_row(f"z{i}", f"Small story number {i}", 300) for i in range(5)],
+    now=_f91_now)
+check("breakout can ride a manual short too", bool(_m91) and _m91["id"] == "m1")
+
+check("winner matching accepts the same story re-syndicated",
+      _wc91([{"title": "Drake Karol G Stage Reunion Shocks Fans"}],
+            "Drake and Karol G Reunite on Stage") is not None)
+check("winner matching accepts an exact headline",
+      _wc91([{"title": "Taylor Swift Just Broke Hollywood With This Trailer"}],
+            "Taylor Swift Just Broke Hollywood With This Trailer") is not None)
+check("winner matching refuses a different story about the same person",
+      _wc91([{"title": "Drake Announces World Tour Dates"}],
+            "Drake and Karol G Reunite on Stage") is None)
+
+_f92_rows = [
+    _f91_row("a", "Taylor Swift Broke Hollywood", 1645),
+    _f91_row("b", "Travis Kelce Owes Taylor Swift", 1610),
+    _f91_row("c", "Tom Cruise Chasing Oscar", 1444),
+    _f91_row("d", "DJ Khaled Omits Drake", 1377),
+    _f91_row("e", "Blake Lively Follows Taylor Swift", 1355),
+    _f91_row("f", "Taylor Swift Charts Again", 335),
+]
+_proven = _TN92._proven_names_from(_f92_rows)
+check("proven names come from the catalogue's better half",
+      {"taylor swift", "travis kelce"} <= _proven, str(sorted(_proven)))
+check("below-median shorts contribute no names",
+      "dj khaled" not in _proven and "blake lively" not in _proven)
+check("a cold catalogue proves nothing",
+      _TN92._proven_names_from(_f92_rows[:5]) == set())
+_saved_proven = _TN92._PROVEN_NAMES
+try:
+    _TN92._PROVEN_NAMES = set()
+    _s0 = _TN92._score({"title": "Taylor Swift Surprises Fans With New Album News"}, set())
+    _TN92._PROVEN_NAMES = {"taylor swift"}
+    _s1 = _TN92._score({"title": "Taylor Swift Surprises Fans With New Album News"}, set())
+finally:
+    _TN92._PROVEN_NAMES = _saved_proven
+check("proven-name boost lifts the names the channel's winners carried",
+      _s0 is not None and _s1 is not None and abs((_s1 - _s0) - 0.8) < 1e-6,
+      f"{_s0} -> {_s1}")
+
+_ts91 = (Path(__file__).parent / "pipeline" / "trending_short.py").read_text(encoding="utf-8")
+check("doc stage rides the winner with an opt-out",
+      "GD_RIDE_WINNER" in _ts91 and "_recent_breakout" in _ts91 and
+      "_winner_candidate" in _ts91)
+check("winner lookup uses channel memory, not guesses",
+      "breakout_story" in _ts91 and "channel_memory" in _ts91)
+check("workflow persists channel memory for the cloud",
+      "output/state/channel_memory.json" in _wf and
+      "db/channel_memory.json output/state/" in _wf)
 
 print(f"\n{'='*50}\nRESULT: {sum(1 for _, ok, _ in RESULTS if ok)} passed, "
       f"{sum(1 for _, ok, _ in RESULTS if not ok)} failed")

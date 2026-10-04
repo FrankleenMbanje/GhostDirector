@@ -276,6 +276,47 @@ def _strict_celeb_enabled() -> bool:
     return os.environ.get("GD_STRICT_CELEB", "1") not in ("0", "false", "no")
 
 
+# FIX-092 (self-learning, 2026-10-04): let the channel's OWN outcomes steer
+# the sweep. The 28-day analytics say the winners carry the same names
+# (Swift/Kelce/Cruise/Drake orbit) while procedural stories die at 90-450
+# views. A name is "proven" when it appears in a short above BOTH the
+# channel's own short-view median AND the absolute 1000-view floor — the
+# floor keeps a cold catalogue from crowning pennies, the median keeps the
+# bar moving as the channel grows. Needs >= 6 shorts before it speaks at all.
+def _proven_names_from(rows: list[dict]) -> set[str]:
+    shorts = [r for r in (rows or [])
+              if (r.get("format") or "") == "short" and int(r.get("views") or 0) > 0]
+    if len(shorts) < 6:
+        return set()
+    med = sorted(int(r["views"]) for r in shorts)[len(shorts) // 2]
+    cut = max(med, 1000)
+    names: set[str] = set()
+    for r in shorts:
+        if int(r.get("views") or 0) >= cut:
+            low = (r.get("title") or "").lower()
+            # lower-cased canonical set — the boost check and tests compare
+            # against lowercase titles
+            names |= {n.lower() for n in _BOOST_NAMES if n.lower() in low}
+    return names
+
+
+_PROVEN_NAMES: set[str] | None = None
+
+
+def _proven_names() -> set[str]:
+    """Process-cached proven names from db/channel_memory.json (best effort:
+    a missing or unreadable catalogue simply means no boost)."""
+    global _PROVEN_NAMES
+    if _PROVEN_NAMES is None:
+        try:
+            data = json.loads(
+                (Path("db") / "channel_memory.json").read_text(encoding="utf-8"))
+            _PROVEN_NAMES = _proven_names_from(data.get("rows") or [])
+        except Exception:
+            _PROVEN_NAMES = set()
+    return _PROVEN_NAMES
+
+
 def _score(item: dict, seen_keys: set[str],
            strict: bool | None = None) -> float | None:
     """Higher = better Fame Files candidate. None = rejected."""
@@ -302,6 +343,10 @@ def _score(item: dict, seen_keys: set[str],
         if name.lower() in low:
             score += 2.0
             break
+    # FIX-092: names the channel's own winners carried rank ahead — the boost
+    # decays naturally as the catalogue's proven set changes.
+    if any(n.lower() in low for n in (_proven_names() or ())):
+        score += 0.8
     for kw in ("star", "actor", "singer", "rapper", "pop ", "celebrity",
                "hollywood", "album", "movie", "series", "tour", "show",
                "award", "wedding", "divorce", "arrest", "feud", "viral",

@@ -17,6 +17,7 @@ lane-guards rise-and-fall-shaped headlines.
 
 import asyncio
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -212,6 +213,64 @@ def hook_query_for(story_title: str) -> str | None:
     return None
 
 
+# FIX-091 (self-learning, 2026-10-04): the long-form rides the short that
+# actually earned reach. YouTube Analytics for the last 28 days: 91% of
+# channel views arrive through the Shorts feed, while docs on leftover
+# stories got 7-49 views and zero funnel. Riding the breakout gives the doc
+# the audience the short already proved, and the bridge comment links them.
+_WINNER_STOP = {
+    "the", "a", "an", "and", "for", "with", "from", "after", "before",
+    "into", "over", "under", "new", "says", "said", "this", "that", "her",
+    "his", "their", "its", "was", "were", "has", "have", "had", "will",
+    "just", "about", "what", "why", "how", "who", "when", "where", "you",
+}
+
+
+def _winner_tokens(title: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z']{4,}", (title or "").lower())
+            if w not in _WINNER_STOP}
+
+
+def _winner_candidate(cands: list[dict], winner_title: str) -> dict | None:
+    """The current candidate that is the SAME story as the breakout short.
+
+    Exact story-key match wins; otherwise >= 3 shared distinctive tokens AND
+    a shared roster name — enough to catch a re-syndicated headline without
+    pairing two unrelated stories about the same person.
+    """
+    from pipeline.trending_news import _story_key, _BOOST_NAMES
+    wkey = _story_key(winner_title or "")
+    wtok = _winner_tokens(winner_title)
+    wnames = {n for n in _BOOST_NAMES
+              if n.lower() in (winner_title or "").lower()}
+    for c in cands or []:
+        t = c.get("title") or ""
+        if _story_key(t) == wkey:
+            return c
+        tok = _winner_tokens(t)
+        if len(wtok & tok) >= 3 and (wnames & {n for n in _BOOST_NAMES
+                                               if n.lower() in t.lower()}):
+            return c
+    return None
+
+
+def _recent_breakout(channel: str | None = None) -> dict | None:
+    """FIX-091: the recent breakout short (live channel memory, then the
+    cached snapshot). Never fatal — no signal means the normal auto-pick."""
+    from pipeline.channel_memory import breakout_story
+    try:
+        from pipeline.channel_memory import fetch_rows
+        return breakout_story(fetch_rows(channel), hours=120)
+    except Exception as e:
+        log.warning(f"Live breakout lookup failed ({e}) — trying cached memory.")
+    try:
+        data = json.loads(
+            (Path("db") / "channel_memory.json").read_text(encoding="utf-8"))
+        return breakout_story(data.get("rows") or [], hours=120)
+    except Exception:
+        return None
+
+
 # ──────────────────────────────────────────────
 # Production
 # ──────────────────────────────────────────────
@@ -316,21 +375,37 @@ async def run_trending_short(
         if not cands:
             say("[red]✗ No fresh trending stories found — try again later.[/red]")
             return {"ok": False, "reason": "no_fresh_stories"}
+        # FIX-091 (self-learning): the long-form rides the story that earned
+        # reach. GD_RIDE_WINNER=0 disables; no matching candidate = the
+        # normal auto-pick below. Riding intentionally bypasses the
+        # no-repeat check: the short already told the compressed story, the
+        # doc is its companion, and the bridge comment links the pair.
+        if longform and _os.environ.get("GD_RIDE_WINNER", "1") not in ("0", "false", "no"):
+            winner = _recent_breakout(channel)
+            if winner:
+                wc = _winner_candidate(cands, winner.get("title") or "")
+                if wc is not None:
+                    story = wc
+                    say(f"[green]🔁 Long-form rides the breakout short "
+                        f"({winner.get('views')} views):[/green] {winner.get('title')}")
+                    log.info(f"FIX-091: riding breakout '{winner.get('title')}' "
+                             f"({winner.get('views')} views)")
+
         # No-repeat rule: take the first candidate whose story was NEVER
         # produced before (ledger + DB). Only when every candidate is a
         # repeat do we fall back to the top one — a repeat beats no video.
-        story = None
-        for c in cands:
-            if _story_seen(c.get("title") or "", recorder):
-                say(f"[dim]Skipping already-produced story: {(c.get('title') or '')[:60]}[/dim]")
-                continue
-            story = c
-            break
         if story is None:
-            story = cands[0]
-            say("[yellow]⚠ All candidates already produced — taking the top one anyway.[/yellow]")
-        else:
-            say("[dim]Auto-picked the top-scored fresh (never-produced) story.[/dim]")
+            for c in cands:
+                if _story_seen(c.get("title") or "", recorder):
+                    say(f"[dim]Skipping already-produced story: {(c.get('title') or '')[:60]}[/dim]")
+                    continue
+                story = c
+                break
+            if story is None:
+                story = cands[0]
+                say("[yellow]⚠ All candidates already produced — taking the top one anyway.[/yellow]")
+            else:
+                say("[dim]Auto-picked the top-scored fresh (never-produced) story.[/dim]")
 
     topic = _story_to_topic(story)
     say(f"\n[bold yellow]* Story:[/bold yellow] {story.get('title')}")

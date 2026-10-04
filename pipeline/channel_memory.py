@@ -225,6 +225,49 @@ def delivery_audit(rows: list[dict], hours: float = 72,
             f"last {int(hours)}h are public. OK"]
 
 
+def breakout_story(rows: list[dict], hours: float = 120,
+                   min_views: int = 800, min_ratio: float = 1.2,
+                   now: datetime | None = None) -> dict | None:
+    """FIX-091: the recent short that actually earned reach — the story the
+    long-form should ride.
+
+    Why: the 10-02 doc shipped on the *leftover* story after shorts consumed
+    the top candidates, so the hit shorts had no companion and the doc had no
+    audience. Riding the breakout inverts that: the long-form (and its bridge
+    comment) points at the story viewers already chose. A story qualifies as
+    a breakout only when its views clear BOTH an absolute floor and a
+    median-relative multiple, so a quiet week can't crown a weak winner.
+    """
+    ref = now or datetime.now(timezone.utc)
+    window: list[tuple[int, dict]] = []
+    for r in rows or []:
+        try:
+            if (r.get("format") or "") != "short":
+                continue
+            if not int(r.get("views") or 0):
+                continue
+            dt = datetime.fromisoformat(
+                (r.get("published") or "").replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            age_h = (ref - dt).total_seconds() / 3600
+            if age_h < 0 or age_h > hours:
+                continue
+            window.append((int(r.get("views") or 0), r))
+        except Exception:
+            continue
+    if not window:
+        return None
+    all_views = sorted(int(r.get("views") or 0) for r in rows or []
+                       if (r.get("format") or "") == "short")
+    med = statistics.median(all_views) if all_views else 0
+    window.sort(key=lambda t: -t[0])
+    top_views, top = window[0]
+    if top_views < min_views or (med and top_views < med * min_ratio):
+        return None
+    return top
+
+
 def fetch_channel_stats(channel: str | None = None) -> dict:
     """Subscriber + lifetime-view counts — the monetization gap's numerator."""
     try:
