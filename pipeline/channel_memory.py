@@ -181,6 +181,50 @@ def fetch_rows(channel: str | None = None) -> list[dict]:
     return rows
 
 
+def delivery_audit(rows: list[dict], hours: float = 72,
+                   now: datetime | None = None) -> list[str]:
+    """FIX-089: which recent AUTOMATED uploads are not PUBLIC right now?
+
+    The 2026-10-02 Strictly doc passed its post-upload guard
+    ("privacy=public confirmed") and read `unlisted` the next morning —
+    either a platform demotion or a Studio flip; the log alone could not
+    tell. The catalogue refresh captures live privacyStatus, so this audit
+    reports drift the upload-time guard cannot see. Manual uploads are the
+    operator's own — never flagged. Nothing is auto-flipped: re-publishing
+    a small rubbish doc may be exactly what the operator did NOT want.
+    """
+    ref = now or datetime.now(timezone.utc)
+    flagged: list[str] = []
+    checked = 0
+    for r in rows or []:
+        try:
+            if (r.get("origin") or "") != "automated":
+                continue
+            dt = datetime.fromisoformat(
+                (r.get("published") or "").replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            age_h = (ref - dt).total_seconds() / 3600
+            if age_h < 0 or age_h > hours:
+                continue
+            checked += 1
+            priv = (r.get("privacy") or "unknown").lower()
+            if priv != "public":
+                flagged.append(
+                    f"  NOT PUBLIC — {r.get('id')} [{priv}] "
+                    f"{r.get('published')} — {r.get('title')}")
+        except Exception:
+            continue
+    if flagged:
+        return ([f"DELIVERY AUDIT — {len(flagged)}/{checked} automated "
+                 f"uploads from the last {int(hours)}h are not public:"]
+                + flagged
+                + ["  → republish from Studio if unintended; the pipeline "
+                   "re-asserts PUBLIC only during its own upload window."])
+    return [f"DELIVERY AUDIT — all {checked} automated uploads from the "
+            f"last {int(hours)}h are public. OK"]
+
+
 def fetch_channel_stats(channel: str | None = None) -> dict:
     """Subscriber + lifetime-view counts — the monetization gap's numerator."""
     try:

@@ -39,6 +39,50 @@ def _subject_tokens(title: str) -> set[str]:
     return {w.lower() for w in words if len(w) > 2 and w.lower() not in _TITLE_STOPWORDS}
 
 
+def _dead_left_zone(img: Image.Image) -> tuple[float, float]:
+    """FIX-088: (dead fraction, mean luminance) of the LEFT face zone.
+
+    The 2026-10-02 Strictly doc (lQJwX600UUU) shipped a thumbnail whose left
+    half was 98% pure black: the story named no person, so no subject photo
+    was found and the split painter fell back to the ALREADY-DARKENED
+    background (its left-side text gradient is baked in) — a black hole with
+    a headline bar under it. No one clicks that. Measures the zone above the
+    headline bar, left of the seam, on the finished image.
+    """
+    g = np.asarray(img.convert("L"), dtype=np.float32)
+    w, h = img.size  # PIL size is (w, h)
+    zone = g[: int(h * 0.82), : w // 2]
+    if zone.size == 0:
+        return 0.0, 255.0
+    return float((zone < 18).mean()), float(zone.mean())
+
+
+def _clean_photo_pool(script: Script) -> list[str]:
+    """FIX-088: clean scene photos, largest first — the painter's rebuild pool.
+
+    "Clean" = not a watermarked stock-agency preview (FIX-049). Populated by
+    generate_thumbnail before the style matrix renders, because the painters
+    never receive the Script object.
+    """
+    from pipeline.assets import is_watermarked_source
+    found: list[tuple[int, str]] = []
+    for scene in getattr(script, "scenes", []) or []:
+        path = getattr(scene, "photo_path", None)
+        if not path or not Path(path).exists():
+            continue
+        if is_watermarked_source(getattr(scene, "source_url", None)):
+            continue
+        try:
+            with Image.open(path) as im:
+                px = im.size[0] * im.size[1]
+                if px and im.size[0] >= 400 and im.size[1] >= 300:
+                    found.append((px, str(path)))
+        except Exception:
+            continue
+    found.sort(key=lambda t: -t[0])
+    return [p for _, p in found]
+
+
 def _pick_subject_scene(script: Script) -> int | None:
     """Index of the first scene whose people_to_show matches the title subject.
 
@@ -282,8 +326,9 @@ def generate_thumbnail(script: Script, template: dict, output_dir: Path) -> Path
     # ── EXCLUSIVE kit: stash the CLEAN subject photo + a second face so the
     # exclusive_news painter builds its split from raw photos (the graded
     # bg has a baked-in gradient that poisons the right half).
-    global _EXCLUSIVE_KIT
+    global _EXCLUSIVE_KIT, _CLEAN_PHOTO_POOL
     _EXCLUSIVE_KIT = {"primary": None, "secondary": None}
+    _CLEAN_PHOTO_POOL = _clean_photo_pool(script)
     subject_idx = _pick_subject_scene(script)
     if subject_idx is not None and script.scenes[subject_idx].photo_path:
         _EXCLUSIVE_KIT["primary"] = script.scenes[subject_idx].photo_path
@@ -604,6 +649,10 @@ _LAYOUTS = {
 # generate_thumbnail stashes them here before calling render_style_variants.
 _EXCLUSIVE_KIT: dict = {"primary": None, "secondary": None}
 
+# FIX-088: clean (non-watermarked) scene photos, largest first — the rebuild
+# pool the exclusive-split painter uses when its left face is a black hole.
+_CLEAN_PHOTO_POOL: list[str] = []
+
 # The operator's real PNG kit (assets/Thumbnail PNGs/): pre-drawn furniture
 # overlays composited 1:1 on a 1280x720 canvas — LIVE badge, EXCLUSIVE tab,
 # white headline bar, middle line, mid-frame red box are all baked in; only
@@ -750,6 +799,50 @@ def _layout_exclusive_news(img, words, font_size, width, height, style):
     if left is None:
         left = _fill_crop(img.convert("RGB"), seam_x, height)
     right = _face("secondary", width - seam_x) or left.transpose(Image.FLIP_LEFT_RIGHT)
+
+    # FIX-088: a face that IS a black hole must never ship. When the primary
+    # photo is missing/unusable the fallback above pastes the ALREADY-DARKENED
+    # background (the text-side gradient is baked in), producing a ~98%-black
+    # left half — the 2026-10-02 Strictly doc thumbnail. Detect it and rebuild
+    # from the clean-photo pool (brightened); only if nothing clears the floor
+    # do we lift the current crop and, failing that, ship as-is.
+    dead_frac, mean_lum = _dead_left_zone(left)
+    if dead_frac > 0.60 or mean_lum < 42.0:
+        pool = [p for p in _CLEAN_PHOTO_POOL
+                if not (_EXCLUSIVE_KIT.get("primary")
+                        and str(p) == str(_EXCLUSIVE_KIT["primary"]))] \
+            or list(_CLEAN_PHOTO_POOL)
+        best_cand, best_lum, cleared = None, mean_lum, False
+        for cand_path in pool:
+            try:
+                cand = _fill_crop(Image.open(cand_path).convert("RGB"), seam_x, height)
+                cand = ImageEnhance.Brightness(cand).enhance(1.10)
+                cand = ImageEnhance.Color(cand).enhance(1.18)
+                cand = ImageEnhance.Contrast(cand).enhance(1.08)
+            except Exception:
+                continue
+            cand_dead, cand_lum = _dead_left_zone(cand)
+            if cand_dead <= 0.60 and cand_lum >= 42.0:
+                left, cleared = cand, True
+                log.warning("Thumbnail left face was near-black — "
+                            "rebuilt from a clean scene photo.")
+                break
+            if cand_lum > best_lum:
+                best_lum, best_cand = cand_lum, cand
+        if not cleared and best_cand is not None:
+            left = best_cand
+            log.warning("Thumbnail left face rebuilt from the brightest clean "
+                        "photo (below the ideal floor).")
+        if _dead_left_zone(left)[0] > 0.60 or _dead_left_zone(left)[1] < 42.0:
+            try:
+                lifted = ImageEnhance.Brightness(left).enhance(1.45)
+                lifted = ImageEnhance.Contrast(lifted).enhance(1.05)
+                if _dead_left_zone(lifted)[1] >= 42.0:
+                    left = lifted
+                    log.warning("Thumbnail left face lifted — "
+                                "no clean photo cleared the floor.")
+            except Exception:
+                pass
 
     canvas.paste(left, (0, 0))
     canvas.paste(right, (seam_x, 0))

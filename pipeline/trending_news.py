@@ -217,7 +217,67 @@ def _in_lane_guard(title: str) -> bool:
     return any(re.search(p, low) for p in _LANE_PATTERNS)
 
 
-def _score(item: dict, seen_keys: set[str]) -> float | None:
+# FIX-087 (operator, 2026-10-02: "it should be strictly celebrity news"):
+# the lane lock's "feud" hit let a Strictly Come Dancing gossip item with NO
+# named celebrity through at 5.9, and the 8-min doc shipped on it. Two hard
+# filters run in _score BEFORE any scoring, so no lane bonus can rescue a
+# non-celebrity item:
+#   1. show-gossip blocklist — reality/talent-show items are not our lane;
+#   2. must name a person — celebrity news names WHO (a headline that only
+#      says "a celebrity" and "a pro dancer" is not celebrity news).
+# GD_STRICT_CELEB=0 disables both (operator override, same as the lane lock).
+_SHOW_GOSSIP_RE = [
+    r"\bstrictly\b(?!\s+(speaking|business|limited|professional))",
+    r"\bcome dancing\b", r"\bdancing with the stars\b",
+    r"\blove island\b", r"\bi'?m a celebrity\b",
+    r"\bthe traitors\b", r"\bx factor\b", r"\bbritain'?s got talent\b",
+    r"\bbgt\b", r"\bthe masked singer\b", r"\bamerican idol\b",
+    r"\bmasterchef\b", r"\bbake off\b", r"\breal housewives\b",
+    r"\bthe bachelor\b",
+]
+
+
+def _in_show_gossip(title: str) -> bool:
+    low = (title or "").lower()
+    return any(re.search(p, low) for p in _SHOW_GOSSIP_RE)
+
+
+_NON_PERSON_PAIRS = re.compile(
+    r"\b(?:new york|los angeles|las vegas|united states|north america|"
+    r"golden globes?|box office|white house|wall street|super bowl|"
+    r"page six|rolling stone|hollywood reporter)\b")
+
+
+def _named_person(title: str) -> bool:
+    """FIX-087: does the headline name a person? Celebrity news names WHO.
+
+    True when a known roster name appears, or when two consecutive
+    Capitalized words form a name-shaped pair that isn't a known non-person
+    phrase. Title-cased feeds make this permissive (a two-cap pair is easy
+    to find), which is fine — the show-gossip blocklist is the hard stop for
+    the case that shipped ("Ex-Strictly star says there was secret feud
+    between celebrity and pro dancer on his series").
+    """
+    low = (title or "").lower()
+    if not low:
+        return False
+    for name in _BOOST_NAMES:
+        if name.lower() in low:
+            return True
+    for m in re.finditer(
+            r"\b([A-Z][a-z'’\-]{1,})\s+([A-Z][a-z'’\-]{1,})\b", title or ""):
+        pair = f"{m.group(1)} {m.group(2)}"
+        if not _NON_PERSON_PAIRS.search(pair.lower()):
+            return True
+    return False
+
+
+def _strict_celeb_enabled() -> bool:
+    return os.environ.get("GD_STRICT_CELEB", "1") not in ("0", "false", "no")
+
+
+def _score(item: dict, seen_keys: set[str],
+           strict: bool | None = None) -> float | None:
     """Higher = better Fame Files candidate. None = rejected."""
     title = item.get("title") or ""
     if not title or len(title) < 25:
@@ -225,6 +285,9 @@ def _score(item: dict, seen_keys: set[str]) -> float | None:
     if _story_key(title) in seen_keys:
         return None
     if _in_lane_guard(title):
+        return None
+    strict_on = _strict_celeb_enabled() if strict is None else strict
+    if strict_on and (_in_show_gossip(title) or not _named_person(title)):
         return None
 
     low = title.lower()
@@ -311,19 +374,29 @@ async def discover_trending(limit: int | None = None) -> list[dict]:
 
     now = _now_utc()
     lane_lock = os.environ.get("GD_LANE_LOCK", "1") not in ("0", "false", "no")
-    scored: list[dict] = []
-    for it in results:
-        s = _score(it, seen)
-        if s is None:
-            continue
-        dt = _parse_when(it.get("published") or "")
-        scored.append({
-            **it,
-            "score": round(s, 2),
-            "when_hours_ago": round((now - dt).total_seconds() / 3600, 1) if dt else None,
-        })
+    def _scored(strict: bool) -> list[dict]:
+        out: list[dict] = []
+        for it in results:
+            s = _score(it, seen, strict=strict)
+            if s is None:
+                continue
+            dt = _parse_when(it.get("published") or "")
+            out.append({
+                **it,
+                "score": round(s, 2),
+                "when_hours_ago": round((now - dt).total_seconds() / 3600, 1) if dt else None,
+            })
+        return _lane_gate(out, lane_lock)
 
-    scored = _lane_gate(scored, lane_lock)
+    strict_on = _strict_celeb_enabled()
+    scored = _scored(strict_on)
+    if not scored and strict_on:
+        # FIX-087 safety valve: strict celebrity sourcing must never starve
+        # the daily slate. Lane lock still applies, and the fallback is loud
+        # in the log so the operator can see it happened.
+        log.warning("Strict celebrity filter rejected every candidate — "
+                    "retrying with it off (lane lock still applies).")
+        scored = _scored(False)
     scored.sort(key=lambda x: x["score"], reverse=True)
     return scored[:limit]
 

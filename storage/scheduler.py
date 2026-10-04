@@ -154,6 +154,17 @@ def _run_intel(channel: str, env: dict) -> None:
             memory = json.loads(mem_path.read_text(encoding="utf-8"))
         parts.insert(0, "## DIAGNOSIS\n" + "\n".join(
             diagnose(daily, memory, _queued_topics())))
+        # FIX-089: report any automated upload that is no longer PUBLIC.
+        # The post-upload guard only covers the upload window; this reads
+        # the live status the catalogue refresh just captured (the 10-02
+        # Strictly doc logged "public confirmed" and was unlisted by
+        # morning). Manual uploads are never flagged.
+        try:
+            from pipeline.channel_memory import delivery_audit as _audit
+            _audit_lines = _audit((memory or {}).get("rows", []))
+        except Exception as e_a:
+            _audit_lines = [f"DELIVERY AUDIT — skipped ({e_a})"]
+        parts.insert(1, "## DELIVERY AUDIT\n" + "\n".join(_audit_lines))
         # FIX-086: evaluate running experiments against today's catalogue.
         try:
             from pipeline import experiments as _EX

@@ -9,6 +9,8 @@ Covers:
   7.4  QC repair: caption findings move the band instead of re-rolling the visual
   7.10 lane lock + publish queue + companion bridge (FIX-077/078/079)
   7.11 voice/music de-AI pass (FIX-075/076): pitch jitter, mix graph, voices
+  7.18 strict celebrity gate, dead-black thumbnail guard, delivery audit
+       (FIX-087/088/089)
 """
 
 import sys
@@ -836,6 +838,130 @@ check("workflow persists the registry", "experiments.json" in _wf)
 _ts_x = (Path(__file__).parent / "pipeline" / "trending_short.py").read_text(encoding="utf-8")
 check("production assigns + records the arm",
       "assign_variant" in _ts_x and "real_audio_hook" in _ts_x)
+
+# ── 7.18 strict celebrity gate + dead-black thumbnail guard + audit ──
+#           (FIX-087/088/089)
+print("\n[7.18] strict celebrity gate + dead-black thumbnail guard + "
+      "delivery audit (FIX-087/088/089)")
+import pipeline.trending_news as _TN87
+import pipeline.thumbnail as _TB88
+
+_f87_src = (Path(__file__).parent / "pipeline" / "trending_news.py").read_text(encoding="utf-8")
+_f87_exact = ("Ex-Strictly star says there was secret feud between celebrity "
+              "and pro dancer on his series")
+check("show-gossip blocklist catches the Strictly story that shipped",
+      _TN87._in_show_gossip(_f87_exact))
+check("show-gossip blocklist keeps ordinary 'strictly' headlines",
+      not _TN87._in_show_gossip("Strictly speaking, Drake's lawyers want a delay"))
+check("named-person check rejects the anonymous-celebrity headline",
+      not _TN87._named_person(_f87_exact))
+check("place names don't count as people",
+      not _TN87._named_person("New York Knicks fire coach after late-night scandal"))
+check("roster names count as people",
+      _TN87._named_person("Taylor Swift quietly drops a surprise single"))
+check("strict gate rejects the exact story that shipped the Strictly doc",
+      _TN87._score({"title": _f87_exact}, set(), strict=True) is None)
+check("strict gate accepts a named-celebrity feud headline",
+      _TN87._score({"title": "Drake and Kendrick Lamar feud escalates as lawyers get involved"},
+                   set(), strict=True) is not None)
+_f87_saved = os.environ.get("GD_STRICT_CELEB")
+try:
+    os.environ["GD_STRICT_CELEB"] = "0"
+    check("GD_STRICT_CELEB=0 restores the old permissive gate",
+          _TN87._score({"title": _f87_exact}, set()) is not None)
+finally:
+    if _f87_saved is None:
+        os.environ.pop("GD_STRICT_CELEB", None)
+    else:
+        os.environ["GD_STRICT_CELEB"] = _f87_saved
+check("strict celebrity filtering is ON by default", _TN87._strict_celeb_enabled())
+check("strict sourcing falls back instead of starving the day",
+      "retrying with it off" in _f87_src and "_scored(False)" in _f87_src)
+check("strict gate runs before scoring (no lane bonus can rescue it)",
+      _f87_src.find("strict_on and (_in_show_gossip") < _f87_src.find("lane = _lane_hits"))
+
+from PIL import Image as _Img88, ImageDraw as _IDraw88  # noqa: E402
+
+_f88_black = _Img88.new("RGB", (400, 300), (0, 0, 0))
+_f88_dark, _f88_darklum = _TB88._dead_left_zone(_f88_black)
+check("dead-zone meter reads a pure-black face as dead",
+      _f88_dark > 0.9 and _f88_darklum < 10,
+      f"dead={_f88_dark:.2f} lum={_f88_darklum:.0f}")
+
+_f88_photo = TMP / "f88_clean_photo.png"
+_f88_pim = _Img88.new("RGB", (800, 1000), (216, 172, 140))
+_f88_pd = _IDraw88.Draw(_f88_pim)
+for _f88_x in range(0, 800, 40):
+    _f88_pd.line([(_f88_x, 0), (_f88_x, 1000)],
+                 fill=(120 + (_f88_x % 90), 84, 66), width=7)
+_f88_pim.save(str(_f88_photo))
+
+_f88_bg = _Img88.new("RGB", (1280, 720), (12, 10, 16))  # darkened graded bg
+_f88_kit_saved = dict(_TB88._EXCLUSIVE_KIT)
+_f88_pool_saved = list(_TB88._CLEAN_PHOTO_POOL)
+_f88_style = {"palette": {}, "accent": "red_bar"}
+_f88_words = ["SECRET", "STRICTLY", "FEUD"]
+try:
+    _TB88._EXCLUSIVE_KIT = {"primary": None, "secondary": None}
+    _TB88._CLEAN_PHOTO_POOL = []
+    _f88_out_a = _TB88._layout_exclusive_news(
+        _f88_bg.copy(), _f88_words, 64, 1280, 720, _f88_style)
+    _f88_da, _f88_la = _TB88._dead_left_zone(_f88_out_a)
+    check("no clean photo anywhere — the painter still returns an image",
+          _f88_out_a.size == (1280, 720))
+
+    _TB88._CLEAN_PHOTO_POOL = [str(_f88_photo)]
+    _f88_out_b = _TB88._layout_exclusive_news(
+        _f88_bg.copy(), _f88_words, 64, 1280, 720, _f88_style)
+    _f88_db, _f88_lb = _TB88._dead_left_zone(_f88_out_b)
+    check("black-hole left face is rebuilt from the clean-photo pool",
+          _f88_db <= 0.60 and _f88_lb >= 42.0,
+          f"dead={_f88_db:.2f} lum={_f88_lb:.1f}")
+    check("the rebuild beats the dead fallback it replaced",
+          _f88_db < _f88_da and _f88_lb > _f88_la,
+          f"{_f88_da:.2f}/{_f88_la:.0f} -> {_f88_db:.2f}/{_f88_lb:.0f}")
+
+    _TB88._EXCLUSIVE_KIT = {"primary": str(_f88_photo), "secondary": None}
+    _f88_out_c = _TB88._layout_exclusive_news(
+        _f88_bg.copy(), _f88_words, 64, 1280, 720, _f88_style)
+    _f88_dc, _f88_lc = _TB88._dead_left_zone(_f88_out_c)
+    check("a healthy primary face is used as-is (guard stays quiet)",
+          _f88_dc <= 0.60 and _f88_lc >= 42.0)
+finally:
+    _TB88._EXCLUSIVE_KIT = _f88_kit_saved
+    _TB88._CLEAN_PHOTO_POOL = _f88_pool_saved
+
+_f88_src = (Path(__file__).parent / "pipeline" / "thumbnail.py").read_text(encoding="utf-8")
+check("the clean-photo pool is built before the style matrix renders",
+      _f88_src.find("_CLEAN_PHOTO_POOL = _clean_photo_pool(script)") <
+      _f88_src.find("style_rows = render_style_variants"))
+
+from pipeline.channel_memory import delivery_audit as _f89_audit  # noqa: E402
+
+_f89_now = _dt.datetime(2026, 10, 4, 10, 0, tzinfo=_dt.timezone.utc)
+_f89_rows = [
+    {"id": "aaa", "title": "Rubbish doc", "origin": "automated",
+     "privacy": "unlisted", "published": "2026-10-03T18:41:10Z"},
+    {"id": "bbb", "title": "Fine short", "origin": "automated",
+     "privacy": "public", "published": "2026-10-03T14:00:00Z"},
+    {"id": "ccc", "title": "Old drift", "origin": "automated",
+     "privacy": "private", "published": "2026-09-01T00:00:00Z"},
+    {"id": "ddd", "title": "Operator manual", "origin": "manual",
+     "privacy": "unlisted", "published": "2026-10-03T10:00:00Z"},
+]
+_f89_lines = "\n".join(_f89_audit(_f89_rows, hours=72, now=_f89_now))
+check("delivery audit flags the drifted automated upload", "aaa" in _f89_lines)
+check("delivery audit does not flag public videos", "bbb" not in _f89_lines)
+check("delivery audit ignores drift older than the window", "ccc" not in _f89_lines)
+check("delivery audit never flags the operator's manual uploads", "ddd" not in _f89_lines)
+_f89_clean = "\n".join(_f89_audit(_f89_rows[1:2], now=_f89_now))
+check("delivery audit reports health when nothing drifted",
+      "are public. OK" in _f89_clean)
+_f89_sched = (Path(__file__).parent / "storage" / "scheduler.py").read_text(encoding="utf-8")
+check("scheduler runs the delivery audit inside the daily intel",
+      "delivery_audit" in _f89_sched and "DELIVERY AUDIT" in _f89_sched)
+check("workflow state cache is run-scoped (no immutable-key freeze, FIX-090)",
+      "gd-state-${{ github.run_id }}" in _wf and "restore-keys" in _wf)
 
 print(f"\n{'='*50}\nRESULT: {sum(1 for _, ok, _ in RESULTS if ok)} passed, "
       f"{sum(1 for _, ok, _ in RESULTS if not ok)} failed")

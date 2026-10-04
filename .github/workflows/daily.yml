@@ -63,7 +63,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: output/state
-          key: gd-state-v1
+          # FIX-090: the old fixed key `gd-state-v1` was saved once (2026-09-30)
+          # and never updated — cache keys are immutable, so the no-repeat
+          # ledger and experiments state silently reset on every run (the
+          # same stories could repeat, arms were forgotten). Run-scoped keys
+          # + a prefix restore keep the newest state flowing forward.
+          key: gd-state-${{ github.run_id }}
+          restore-keys: |
+            gd-state-
 
       - name: Restore state files into live paths
         run: |
