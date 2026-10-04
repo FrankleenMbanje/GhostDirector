@@ -1342,6 +1342,23 @@ check("celebrity photo path now runs the candidate selector",
       bool(_web95) and "select_best_visual" in _web95.group(0)
       and "Got SELECTED photo via DDG" in _web95.group(0))
 
+# ── 7.23 hybrid voice: ElevenLabs for docs, edge for shorts (FIX-096) ──
+print("\n[7.23] hybrid voice (FIX-096)")
+import json as _json96  # noqa: E402
+_tpl_dir96 = Path(__file__).parent / "templates"
+_doc96 = _json96.loads((_tpl_dir96 / "celebrity_8min.json").read_text(encoding="utf-8"))
+_short96 = _json96.loads((_tpl_dir96 / "short_hook.json").read_text(encoding="utf-8"))
+check("docs request ElevenLabs for the narration read",
+      _doc96.get("voice", {}).get("provider") == "elevenlabs")
+_el96 = _doc96.get("voice_elevenlabs") or {}
+check("docs configure an ElevenLabs voice + model",
+      bool(_el96.get("voice_id")) and bool(_el96.get("model")), str(_el96)[:60])
+check("shorts stay on free edge-tts (volume path)",
+      _short96.get("voice", {}).get("provider") == "edge-tts")
+_voice96 = (Path(__file__).parent / "pipeline" / "voice.py").read_text(encoding="utf-8")
+check("missing ElevenLabs key safe-switches the whole run to edge-tts",
+      "using Edge-TTS for the whole run" in _voice96)
+
 print(f"\n{'='*50}\nRESULT: {sum(1 for _, ok, _ in RESULTS if ok)} passed, "
       f"{sum(1 for _, ok, _ in RESULTS if not ok)} failed")
 sys.exit(0 if all(ok for _, ok, _ in RESULTS) else 1)

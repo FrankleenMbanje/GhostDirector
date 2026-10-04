@@ -36,10 +36,18 @@
     ]
   },
   "voice": {
-    "provider": "edge-tts",
+    "provider": "elevenlabs",
     "voice_id": "en-US-AndrewMultilingualNeural",
     "rate": "+0%",
     "pitch": "-2Hz"
+  },
+  "voice_elevenlabs": {
+    "voice_id": "pNInz6obpgDQGcFmaJgB",
+    "model": "eleven_multilingual_v2",
+    "stability": 0.45,
+    "similarity_boost": 0.8,
+    "style": 0.35,
+    "use_speaker_boost": true
   },
   "visuals": {
     "resolution": "1920x1080",
