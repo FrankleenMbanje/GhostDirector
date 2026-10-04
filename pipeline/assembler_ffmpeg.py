@@ -440,25 +440,40 @@ def _build_hook_card(script, template: dict, temp_dir: Path) -> Path | None:
     # zoompan type pop; videos run through the same trim as before.
     scene1_photo = getattr(script.scenes[0], "photo_path", None) if script.scenes else None
     scene1_video = getattr(script.scenes[0], "video_path", None) if script.scenes else None
-    zoom_filter = (
-        f"zoompan=z='1+0.16*{p}':d=1:"
-        f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={width}x{height}:fps={fps}"
-    )
-    type_chain = (
-        ",".join(draws)
-        + f",{zoom_filter},"
-        f"fade=t=out:st={card_dur - 0.3:.2f}:d=0.3,"
-        f"format=yuv420p"
-    )
+    # FIX-093: the "kinetic" card rendered COMPLETELY STATIC — measured 0.00
+    # mean frame motion across its full 2.2s (frame-diff probe, 2026-10-04).
+    # Root cause: zoompan's `on` counts frames produced from the CURRENT
+    # input image; `-loop 1` + `d=1` yields exactly one frame per input
+    # image, so `on` stayed 0 and the scale-pop never advanced. Every short
+    # and every doc opened on a 2.2-second freeze frame — half the test
+    # audience swipes in that window (engaged views ~50%). Photo path: ONE
+    # image input with d=total_frames so `on` counts 0..N-1; video/color
+    # paths keep d=1 (their own frame-to-frame motion carries).
+    def _zoom(d: int) -> str:
+        return (f"zoompan=z='1+0.16*{p}':d={d}:"
+                f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+                f"s={width}x{height}:fps={fps}")
+
+    fade_tail = (f"fade=t=out:st={card_dur - 0.3:.2f}:d=0.3,"
+                 f"format=yuv420p")
+
+    def _type_chain(d: int) -> str:
+        return ",".join(draws) + f",{_zoom(d)},{fade_tail}"
     if scene1_photo and Path(scene1_photo).exists():
         bg_chain = (
             f"[0:v]scale={big_w}:{big_h}:force_original_aspect_ratio=increase,"
             f"crop={big_w}:{big_h},eq=brightness=-0.22:saturation=1.05,setsar=1"
         )
-        filter_str = bg_chain + type_chain
+        # FIX-093b: this chain was COMPUTED BUT NEVER PASSED to ffmpeg on the
+        # photo/video paths (only the lavfi color path consumed it) — the
+        # "card" shipped as the raw photo: no darkening, no headline text,
+        # no zoom. Wire it through filter_complex and map its output.
+        filter_str = bg_chain + "," + _type_chain(total_frames) + "[vout]"
         args = [
-            "-loop", "1", "-i", str(scene1_photo),
+            "-i", str(scene1_photo),
             "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+            "-filter_complex", filter_str,
+            "-map", "[vout]", "-map", "1:a",
             "-t", f"{card_dur}",
             "-c:v", "libx264", "-crf", "18", "-preset", "fast",
             "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2",
@@ -470,10 +485,12 @@ def _build_hook_card(script, template: dict, temp_dir: Path) -> Path | None:
             f"crop={width}:{height},eq=brightness=-0.22:saturation=1.05,"
             f"fps={fps},setsar=1,trim=duration={card_dur},setpts=PTS-STARTPTS"
         )
-        filter_str = bg_chain + type_chain
+        filter_str = bg_chain + "," + _type_chain(1) + "[vout]"
         args = [
             "-t", "2.5", "-i", str(scene1_video),
             "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+            "-filter_complex", filter_str,
+            "-map", "[vout]", "-map", "1:a",
             "-c:v", "libx264", "-crf", "18", "-preset", "fast",
             "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2",
             "-shortest", str(card_path),
@@ -481,7 +498,7 @@ def _build_hook_card(script, template: dict, temp_dir: Path) -> Path | None:
     else:
         filter_str = (
             f"color=c=0x101110:s={big_w}x{big_h}:d={card_dur}:r={fps},"
-            + type_chain
+            + _type_chain(1)
         )
         args = [
             "-f", "lavfi", "-i", filter_str,
@@ -490,10 +507,10 @@ def _build_hook_card(script, template: dict, temp_dir: Path) -> Path | None:
             "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2",
             "-shortest", str(card_path),
         ]
-    # zoompan GOTCHA (FIX-044): for the lavfi color path the source emits
-    # ALL card_dur×fps frames (d=1 per-frame zoom); the photo path relies
-    # on -loop 1 + -t; the video path trims to card_dur. All three produce
-    # exactly card_dur seconds at fps.
+    # FIX-093: all three paths now produce exactly card_dur seconds at fps —
+    # photo: one image + zoompan d=total_frames; video: input trimmed to
+    # card_dur with d=1 (its own motion carries); color: lavfi source with
+    # d=1. The photo path's zoom is real motion now (was a still loop).
     run_ffmpeg(args, "Kinetic hook card")
     return card_path if card_path.exists() else None
 

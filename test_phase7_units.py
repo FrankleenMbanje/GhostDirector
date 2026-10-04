@@ -12,6 +12,7 @@ Covers:
   7.18 strict celebrity gate, dead-black thumbnail guard, delivery audit
        (FIX-087/088/089)
   7.19 self-learning: winner-riding docs + proven-name boost (FIX-091/092)
+  7.20 kinetic hook card: real motion + wired filter (FIX-093)
 """
 
 import sys
@@ -1050,6 +1051,81 @@ check("winner lookup uses channel memory, not guesses",
 check("workflow persists channel memory for the cloud",
       "output/state/channel_memory.json" in _wf and
       "db/channel_memory.json output/state/" in _wf)
+
+# ── 7.20 the hook card actually moves (FIX-093) ──────────────────────
+print("\n[7.20] kinetic hook card: real motion + wired filter (FIX-093)")
+from models import Scene as _S93, Script as _Sc93  # noqa: E402
+from pipeline.assembler_ffmpeg import _build_hook_card as _bhc93  # noqa: E402
+import subprocess as _sp93  # noqa: E402
+import config as _cfg93  # noqa: E402
+import numpy as _np93  # noqa: E402
+from PIL import Image as _I93, ImageDraw as _D93  # noqa: E402
+
+# FIX-093b: the filter chain was computed but never passed to ffmpeg on the
+# photo path — no darkening, no headline text, no zoom. It must now be wired.
+_asm93 = (Path(__file__).parent / "pipeline" / "assembler_ffmpeg.py"
+          ).read_text(encoding="utf-8")
+check("photo path wires the filter into ffmpeg",
+      "-filter_complex" in _asm93 and '"-map", "[vout]"' in _asm93)
+check("the single-frame loop (the freeze-frame bug) is gone",
+      '"-loop", "1", "-i", str(scene1_photo)' not in _asm93)
+check("photo path zooms for the full card duration",
+      "_type_chain(total_frames)" in _asm93)
+check("video + color paths consume the same type chain",
+      _asm93.count("_type_chain(") >= 3)
+
+# Behavioral: build a card from a synthetic photo and measure it.
+_photo93 = TMP / "hook93.jpg"
+_img93 = _I93.new("RGB", (1600, 900), (40, 50, 90))
+_d93 = _D93.Draw(_img93)
+for _i93 in range(12):
+    _d93.rectangle([_i93 * 130, 0, _i93 * 130 + 90, 900],
+                   fill=(30 + _i93 * 18, 120 + (_i93 % 3) * 40, 220 - _i93 * 12))
+    _d93.ellipse([_i93 * 130 + 20, 100 + _i93 * 40, _i93 * 130 + 80, 160 + _i93 * 40],
+                 fill=(250, 240, 120))
+_img93.save(_photo93)
+_card93 = _bhc93(
+    _Sc93(title="Test Title", description="", tags=[], hook="Test hook",
+          scenes=[_S93(scene_number=1, narration="n", visual_prompt="x",
+                       visual_type="stock_photo", mood="hook",
+                       photo_path=str(_photo93))],
+          total_scenes=1, estimated_duration_minutes=1.0,
+          hook_overlay_text="THE SECRET TEST CARD"),
+    {"visuals": {"resolution": "1920x1080"}}, TMP)
+check("hook card builds from a scene-1 photo", bool(_card93))
+if _card93:
+    _dur93 = float(_sp93.run(
+        [getattr(_cfg93, "FFPROBE_BIN", "ffprobe"), "-v", "error",
+         "-show_entries", "format=duration", "-of", "csv=p=0", str(_card93)],
+        capture_output=True, text=True).stdout.strip() or 0)
+    check("hook card still ~2.2s", abs(_dur93 - 2.2) < 0.15, f"{_dur93:.3f}")
+
+    _f93 = TMP / "f93"
+    _f93.mkdir(exist_ok=True)
+    _sp93.run([getattr(_cfg93, "FFMPEG_BIN", "ffmpeg"), "-y", "-v", "error",
+               "-i", str(_card93), "-vf", "fps=8,scale=180:320",
+               str(_f93 / "f_%02d.png")], capture_output=True)
+    _arrs93 = [_np93.asarray(_I93.open(f).convert("L"), dtype=_np93.float32)
+               for f in sorted(_f93.glob("f_*.png"))]
+    _diffs93 = [float(_np93.abs(_arrs93[i] - _arrs93[i - 1]).mean())
+                for i in range(1, len(_arrs93))]
+    _mean93 = sum(_diffs93) / len(_diffs93) if _diffs93 else 0.0
+    # Pre-fix this measured 0.000 across the whole card (frame-diff probe).
+    check("card is NOT a freeze frame (mean motion > 2.0 over the card)",
+          _mean93 > 2.0, f"mean={_mean93:.2f}")
+
+    _frame93 = TMP / "frame93.png"
+    _sp93.run([getattr(_cfg93, "FFMPEG_BIN", "ffmpeg"), "-y", "-v", "error",
+               "-ss", "1.0", "-i", str(_card93), "-frames:v", "1",
+               str(_frame93)], capture_output=True)
+    _amber93 = 0
+    if _frame93.exists():
+        _rgb93 = _np93.asarray(_I93.open(_frame93).convert("RGB"),
+                               dtype=_np93.int16)
+        _dist93 = _np93.abs(_rgb93 - _np93.array([226, 163, 60])).sum(axis=2)
+        _amber93 = int((_dist93 < 90).sum())
+    check("headline type actually rendered (amber pixels visible)",
+          _amber93 > 50, f"amber_px={_amber93}")
 
 print(f"\n{'='*50}\nRESULT: {sum(1 for _, ok, _ in RESULTS if ok)} passed, "
       f"{sum(1 for _, ok, _ in RESULTS if not ok)} failed")
