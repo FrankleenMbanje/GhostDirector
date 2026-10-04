@@ -1273,6 +1273,75 @@ check("QC does NOT flag a healthy render whose voice runs to the end",
 _crit94, _ = _cq94([i for i in _issues_broken94 if "dead-air tail" in i])
 check("dead-air tail is a CRITICAL finding (blocks upload)", len(_crit94) == 1)
 
+# ── 7.22 asset quality floors + subject-aware selection (FIX-095) ──
+print("\n[7.22] asset quality floors + subject-aware photo selection (FIX-095)")
+from pipeline.assets import (  # noqa: E402
+    valid_photo as _vp95, valid_video as _vv95,
+)
+from pipeline.visual_director import _face_score_adjust as _fsa95  # noqa: E402
+
+
+def _jpg95(path, w, h, seed=0):
+    from PIL import Image, ImageDraw
+    img = Image.new("RGB", (w, h), (30 + seed, 40, 60))
+    d = ImageDraw.Draw(img)
+    for i in range(0, w, max(20, w // 12)):
+        d.rectangle([i, 0, i + max(10, w // 24), h],
+                    fill=(200 - (i % 90), 120 + (i % 80), 60))
+    img.save(path)
+    return path
+
+
+_low95 = _jpg95(TMP / "low95.jpg", 1000, 600)
+_ok95 = _jpg95(TMP / "ok95.jpg", 1280, 720, seed=20)
+check("valid_photo rejects a 1000x600 web embed (FIX-095 floor)",
+      not _vp95(_low95))
+check("valid_photo accepts 1280x720", _vp95(_ok95))
+
+
+def _clip95(path, w, h):
+    _sp94b.run([_ff94, "-y", "-v", "error", "-f", "lavfi",
+                "-i", f"testsrc2=s={w}x{h}:d=2:r=12",
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "14",
+                "-pix_fmt", "yuv420p", str(path)], capture_output=True)
+    return path
+
+
+_clip_small95 = _clip95(TMP / "clip_small95.mp4", 640, 360)
+_clip_ok95 = _clip95(TMP / "clip_ok95.mp4", 1280, 720)
+check("valid_video rejects 640x360 footage (FIX-095 floor)",
+      not _vv95(_clip_small95))
+check("valid_video accepts 1280x720 footage", _vv95(_clip_ok95))
+_prev_w95 = _os94.environ.get("GD_MIN_VIDEO_W")
+_prev_h95 = _os94.environ.get("GD_MIN_VIDEO_H")
+_os94.environ["GD_MIN_VIDEO_W"], _os94.environ["GD_MIN_VIDEO_H"] = "640", "360"
+try:
+    check("video floor is env-tunable for genuinely low-res archive",
+          _vv95(_clip_small95))
+finally:
+    if _prev_w95 is None:
+        _os94.environ.pop("GD_MIN_VIDEO_W", None)
+    else:
+        _os94.environ["GD_MIN_VIDEO_W"] = _prev_w95
+    if _prev_h95 is None:
+        _os94.environ.pop("GD_MIN_VIDEO_H", None)
+    else:
+        _os94.environ["GD_MIN_VIDEO_H"] = _prev_h95
+
+check("face-visible candidate outranks a prettier backdrop (+0.9)",
+      _fsa95({"face": True}) > 0.5)
+check("faceless candidate ranks below an equal with a face (-0.7)",
+      _fsa95({"face": False}) < -0.5)
+check("no face signal = no score adjustment", _fsa95({}) == 0.0)
+
+_assets95 = (Path(__file__).parent / "pipeline" / "assets.py").read_text(encoding="utf-8")
+_web95 = re.search(
+    r'vtype in \("web_photo", "photo_person"\)[\s\S]*?elif vtype == "youtube_clip"',
+    _assets95)
+check("celebrity photo path now runs the candidate selector",
+      bool(_web95) and "select_best_visual" in _web95.group(0)
+      and "Got SELECTED photo via DDG" in _web95.group(0))
+
 print(f"\n{'='*50}\nRESULT: {sum(1 for _, ok, _ in RESULTS if ok)} passed, "
       f"{sum(1 for _, ok, _ in RESULTS if not ok)} failed")
 sys.exit(0 if all(ok for _, ok, _ in RESULTS) else 1)

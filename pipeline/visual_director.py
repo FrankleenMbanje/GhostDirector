@@ -303,6 +303,21 @@ async def rank_candidates_with_gemini(
 # 3. THE SELECTION LOOP (inspect → compare → select best)
 # ═══════════════════════════════════════════════════════════════
 
+def _face_score_adjust(m: dict) -> float:
+    """FIX-095: explicit preference for a candidate where a face is visible.
+
+    Only populated when the scene expects people (see select_best_visual):
+    the best-lit photo of a crowd is the wrong shot for a line that names
+    the person, so a visible subject outranks a marginally cleaner backdrop.
+    None/absent leaves the score untouched.
+    """
+    if m.get("face") is True:
+        return 0.9
+    if m.get("face") is False:
+        return -0.7
+    return 0.0
+
+
 def _quality_score(m: dict, target_w: int, target_h: int) -> float:
     """Deterministic desirability score used to order survivors."""
     if not m.get("ok"):
@@ -381,8 +396,18 @@ async def select_best_visual(
         if not m.get("ok"):
             evidence["rejected"].append({"url": url, "why": "; ".join(m.get("reasons", []))})
             return
-        score = _quality_score(m, target_w, target_h)
-        evidence["inspected"].append({"url": url, **{k: m.get(k) for k in ("width", "height", "sharpness", "luma")}})
+        if kind == "photo" and people:
+            # FIX-095: subject visibility is part of quality — measure it
+            # locally (cheap skin-tone mass probe) so the ranking prefers the
+            # person the narration is about; Gemini still picks among the
+            # finalists for narrative relevance.
+            try:
+                from utils.frame_occupancy import face_centre_y as _fcy
+                m["face"] = _fcy(local) is not None
+            except Exception:
+                m["face"] = None
+        score = _quality_score(m, target_w, target_h) + _face_score_adjust(m)
+        evidence["inspected"].append({"url": url, "face": m.get("face"), **{k: m.get(k) for k in ("width", "height", "sharpness", "luma")}})
         inspected.append((score, url, local, m))
 
     await asyncio.gather(*[_one(i, u) for i, u in enumerate(urls)])

@@ -15,6 +15,7 @@ Fallback order per scene:
 """
 
 import sys
+import os
 import json
 import re
 import shutil
@@ -534,14 +535,29 @@ def _query_usage() -> dict[str, int]:
 # Download helper
 # ─────────────────────────────────────────────────
 
-def valid_video(path: Path, min_w: int = 640, min_h: int = 360) -> bool:
+def _env_int(name: str, default: int) -> int:
+    """Env-configurable integer floor (FIX-095), safe against junk values."""
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def valid_video(path: Path, min_w: int = 0, min_h: int = 0) -> bool:
     """Quality gate for VIDEO b-roll/stock (the photo gate's twin).
 
     Rejects: corrupt/tiny files, ultra-low resolution, washed-out or
     near-black footage (mean luma outside 48–235, no sample below 30), and
     flat frames (luma stddev < 16) — the cheap-stock-footage look on a
     phone screen.
+
+    FIX-095: the floor was 640x360 — a clip that looks like a 2009 rip once
+    scaled to 1080p. Default is now 960x540 with a 1080p preference upstream;
+    override with GD_MIN_VIDEO_W / GD_MIN_VIDEO_H when a topic truly only
+    exists in low-res archive footage.
     """
+    min_w = min_w or _env_int("GD_MIN_VIDEO_W", 960)
+    min_h = min_h or _env_int("GD_MIN_VIDEO_H", 540)
     if not path.exists() or path.stat().st_size <= 50000:
         return False
     try:
@@ -621,8 +637,10 @@ def valid_photo(path: Path, min_w: int = 1280, min_h: int = 720) -> bool:
             # Check either landscape min_w x min_h or portrait min_h x min_w
             is_landscape = (w >= min_w and h >= min_h)
             is_portrait = (h >= min_w and w >= min_h)
-            # Accept if at least 1000 in long dimension and 600 in short
-            acceptable_res = (max(w, h) >= 1000 and min(w, h) >= 600)
+            # FIX-095: the old "acceptable" escape hatch (1000x600) let
+            # thumbnails and cropped Getty embeds onto a 1080p timeline.
+            # A 16:9 render needs ~1280x720 minimum to survive Ken Burns.
+            acceptable_res = (max(w, h) >= 1280 and min(w, h) >= 720)
             if not (is_landscape or is_portrait or acceptable_res):
                 return False
             # Contrast floor: near-uniform frames (logos, blank cards, faint
@@ -1567,38 +1585,53 @@ async def fetch_assets(script: Script, template: dict, output_dir: Path) -> Scri
             # TIER 1: Primary source by visual_type
             # ═══════════════════════════════════════════
             if not got_asset and vtype in ("web_photo", "photo_person"):
+                # FIX-095: celebrity photos used to be "the first URL that
+                # cleared the floor" — random snapshots, harsh crops and
+                # low-res embeds shipped next to the person's name. The DDG
+                # pool now goes through the same search→inspect→compare→
+                # select loop the stock tiers use: pixel-quality ranking plus
+                # a face preference when the scene names a person, then a
+                # Gemini relevance pick among the finalists.
                 for q in scene_queries:
                     if got_asset:
                         break
-                    # Try all candidate images from search rather than abandoning on candidate 0
                     urls = await search_duckduckgo_photos(q, max_results=8)
-                    for url in urls:
-                        if url in _used_urls or _is_banned_url(url):
-                            continue
-                        try:
-                            await download_file(url, photo_path)
-                            if not valid_photo(photo_path):
-                                photo_path.unlink(missing_ok=True)
-                                continue
-                            # FIX-059: reject a near-duplicate of an already-
-                            # used visual of the same person (variety gate).
-                            _h = _image_dhash(photo_path)
-                            if _scene_visual_repeat(variety_state, people, _h) >= VARIETY_MAX_REPEATS:
-                                logger.info(
-                                    f"  ♻️ Skipping near-duplicate visual "
-                                    f"('{_person_key(people)}' already used) — variety")
-                                photo_path.unlink(missing_ok=True)
-                                continue
-                            _used_urls.add(url)
-                            scene.photo_path = str(photo_path)
-                            scene.source_url = url
-                            got_asset = True
-                            _register_scene_visual(output_dir, sn, people, photo_path,
-                                                   source=url, visual_type=vtype)
-                            logger.info(f"  ✅ Got REAL photo via DDG: '{q[:40]}'")
-                            break
-                        except Exception as dl_err:
+                    fresh = [u for u in urls
+                             if u not in _used_urls and not _is_banned_url(u)]
+                    if not fresh:
+                        continue
+                    chosen, _ev = await _vd().select_best_visual(
+                        fresh, narration=scene.narration or primary,
+                        mood=mood, people=people,
+                        target_size=(width, height), kind="photo",
+                        max_candidates=4,
+                        already_used=(_BANNED_MEDIA | set(_used_urls)),
+                    )
+                    if not chosen:
+                        continue
+                    try:
+                        await download_file(chosen, photo_path)
+                        if not valid_photo(photo_path):
                             photo_path.unlink(missing_ok=True)
+                            continue
+                        # FIX-059: reject a near-duplicate of an already-
+                        # used visual of the same person (variety gate).
+                        _h = _image_dhash(photo_path)
+                        if _scene_visual_repeat(variety_state, people, _h) >= VARIETY_MAX_REPEATS:
+                            logger.info(
+                                f"  ♻️ Skipping near-duplicate visual "
+                                f"('{_person_key(people)}' already used) — variety")
+                            photo_path.unlink(missing_ok=True)
+                            continue
+                        _used_urls.add(chosen)
+                        scene.photo_path = str(photo_path)
+                        scene.source_url = chosen
+                        got_asset = True
+                        _register_scene_visual(output_dir, sn, people, photo_path,
+                                               source=chosen, visual_type=vtype)
+                        logger.info(f"  ✅ Got SELECTED photo via DDG: '{q[:40]}'")
+                    except Exception:
+                        photo_path.unlink(missing_ok=True)
 
             elif vtype == "youtube_clip":
                 # PD-first (FIX-050): archive.org newsreels are public domain —
