@@ -48,6 +48,24 @@ videos and nursery rhymes, not celebrity docs — the sample is noisy. Lesson: t
 next harvest must be **competitor-channel-seeded** (pull each competitor channel's
 popular tab), not keyword-seeded. That work is queued below.
 
+### The operator's own folder (`C:\Users\frank\Videos\Captures`) — measured 2026-10-04
+Watched frame-by-frame (contact sheets + audio + cut analysis; read-only):
+
+| File | What it is | Cuts/min | Median gap | First cut | Notes |
+|---|---|---|---|---|---|
+| `Short 2.mp4` (56s, 9:16 60fps) | reference process short — real footage, burned-in captions, **numeric callouts** (`55g`, `79.8g`, `>14K`) | **22.4** | 2.73s | 1.18s | the packaging model to match |
+| `Timeline 1.mov` (52s, 9:16) | process short (mannequin paint → glow) | 16.8 | 1.03s | 13.2s | motion-heavy, loud/clipped mix |
+| `Timeline 1111.mov` (39s, 9:16) | same session capture | 16.8 | 1.03s | 13.2s | near-silent audio after 3.7s |
+| `Tupac.mov` (7:41, 16:9 24fps) | **the "basic one"** — photo slideshow, the same handful of Tupac stills reused, no footage | 4.8 | 4.31s | 0.04s | the baseline we must beat |
+| `Hayden Panettiere.mov` (8:19, 16:9 24fps) | second manual doc, some more variety | 7.9 | 7.79s | 7.96s | still slideshow-paced |
+| `outline for thumbnails.png` | thumbnail formula: split two faces (subject vs antagonist), red **LIVE** + **EXCLUSIVE** badges, 4–5 word ALL-CAPS headline, white with heavy black stroke | — | — | — | already encoded in `thumbnail.py`'s EXCLUSIVE kit |
+
+**Deltas adopted from this folder:** the manual reference's callout layer (FIX-097)
+and the confirmation that our thumbnail EXCLUSIVE kit matches the operator's formula.
+**Deltas still open:** doc cut cadence (manual docs sit at 5–8 cuts/min = slideshow
+speed; target 10–14 with real-footage alternation) and the same-photo repetition the
+Tupac doc suffers from (our variety gate already fights it).
+
 ---
 
 ## 2. What "world-class" means here (measurable acceptance criteria)
@@ -81,6 +99,9 @@ FIX-094 no silent tails · FIX-095 asset floors + subject-aware photo selection.
 
 ## 4. Build order (each step lands with tests + a QC proof)
 
+- **P0.0 — DONE FIX-097:** kinetic fact callouts (numbers/dates/money from the
+  narration's own word timestamps, one per scene, spaced, band-aware). Built from
+  `Short 2.mp4`'s callout layer; disable with `GD_CALLOUTS=0`.
 - **P0.1 — Real-footage scene blend (the "2Pac mix").** For scenes that name a
   person, fetch a 3–6s *real* interview/press clip (the FIX-085 machinery, per
   scene) and alternate it with the best photo of that person; photos stay the

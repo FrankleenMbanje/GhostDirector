@@ -32,6 +32,15 @@ def _seconds_to_ass_time(seconds: float) -> str:
     return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
 
+def _ass_ts(seconds: float) -> str:
+    """ASS timestamp H:MM:SS.cc (FIX-097 callout events)."""
+    t = max(0.0, float(seconds))
+    h = int(t // 3600)
+    m = int((t % 3600) // 60)
+    s = t % 60
+    return f"{h}:{m:02d}:{s:05.2f}"
+
+
 def _with_alignment(line: str, an: int) -> str:
     """FIX-062: inject an ASS alignment override into an event's text field.
 
@@ -59,6 +68,7 @@ def generate_ass_subtitles(
     resolution: tuple[int, int] = (1920, 1080),
     hook_overlay_text: Optional[str] = None,
     band_overrides: Optional[dict[int, str]] = None,
+    callouts: Optional[list[dict]] = None,
 ) -> Path:
     """
     Generate an ASS subtitle file with word-by-word highlighting and optional hook card.
@@ -73,6 +83,11 @@ def generate_ass_subtitles(
         band_overrides: FIX-062 per-scene caption band, {scene_number: "top"|"bottom"}.
             Decided from the rendered frame (utils.frame_occupancy) so captions
             never sit on the subject's face; the QC repair pass can rewrite it.
+        callouts: FIX-097 kinetic fact callouts, each {"start", "end", "text",
+            optionally "align"} — big number/date/money text that pops on the
+            beat (the "55g", ">14K", "$30 MILLION" layer converting shorts use).
+            Alignment defaults to top-center; the assembler flips it to bottom
+            when the scene's captions were lifted to the top band.
     """
     width, height = resolution
     font = caption_config.get("font", "Montserrat-Bold")
@@ -123,6 +138,10 @@ def generate_ass_subtitles(
     # ASS Header with Default and HookCard styles
     hook_font_size = int(font_size * 1.18)
     hook_margin_v = int(height * 0.20) if is_vertical else int(height * 0.14)
+    # FIX-097: kinetic callouts are the biggest type on screen — they read at
+    # a glance on a phone and carry no more than a few characters.
+    callout_font_size = int(font_size * 1.5)
+    callout_margin_v = int(height * 0.10) if is_vertical else int(height * 0.07)
     header = f"""[Script Info]
 Title: GhostDirector Captions
 ScriptType: v4.00+
@@ -135,6 +154,7 @@ ScaledBorderAndShadow: yes
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Default,{font},{font_size},{ass_color},{ass_highlight},{ass_stroke},&H90000000&,-1,0,0,0,100,100,0,0,1,{stroke_width},3,{alignment},{margin_l},{margin_r},{margin_v},1
 Style: HookCard,{font},{hook_font_size},&H0000FFFF&,&H00FFFFFF&,&H00000000&,&H80000000&,-1,0,0,0,100,100,0,0,3,5,2,8,40,40,{hook_margin_v},1
+Style: Callout,{font},{callout_font_size},{ass_color},{ass_highlight},{ass_stroke},&H80000000&,-1,0,0,0,100,100,0,0,1,5,2,8,60,60,{callout_margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -146,6 +166,22 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     if hook_overlay_text:
         clean_hook = hook_overlay_text.strip().upper().replace("\n", " ")
         events.append(f"Dialogue: 1,0:00:00.00,0:00:03.00,HookCard,,0,0,0,,{{\\fad(120,300)}}{clean_hook}")
+
+    # FIX-097: callout overlays sit ABOVE the caption events (layer 2) so a
+    # dense caption block can never hide the number the viewer scans for.
+    for c in (callouts or []):
+        try:
+            txt = str(c.get("text", "")).strip().upper()
+            st = float(c.get("start", 0.0))
+            en = float(c.get("end", st + 1.8))
+            if not txt or en <= st:
+                continue
+            an = int(c.get("align", 8) or 8)
+            events.append(
+                f"Dialogue: 2,{_ass_ts(st)},{_ass_ts(en)},Callout,,0,0,0,,"
+                f"{{\\an{an}\\fad(140,160)}}{txt}")
+        except Exception:
+            continue
 
     for scene_idx, (timestamps, offset) in enumerate(zip(all_timestamps, scene_offsets)):
         if not timestamps:

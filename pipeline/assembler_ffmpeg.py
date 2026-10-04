@@ -1041,6 +1041,93 @@ def _narration_must_have_audio(scene) -> bool:
     return bool((getattr(scene, "narration", "") or "").strip())
 
 
+# FIX-097: kinetic fact callouts. The reference manual short leans on big
+# number/date/money text ("55g", ">14K", "$30 MILLION") popping on the beat —
+# the layer viewers scan for. Extracted from the narration's own word
+# timestamps; no extra model calls, fully deterministic.
+_CALLOUT_UNITS = {
+    "million", "billion", "thousand", "years", "year", "percent",
+    "kg", "g", "grams", "pounds", "months", "weeks", "days", "km", "miles",
+}
+
+
+def _callout_power(word: str, nxt: str = "") -> tuple[int, str]:
+    """Score one timestamp word as a callout: (power, display) — 0 = skip.
+
+    Ranking: money/percent (3) > unit-carrying numbers and years (2) >
+    bare multi-digit numbers (1). The unit word right after the number is
+    folded into the display ("$30" + "million" -> "$30 MILLION").
+    """
+    raw = (word or "").strip().strip(",;:!?\"'()“”")
+    if not raw:
+        return 0, ""
+    n = (nxt or "").strip().strip(",;:!?\"'()“”")
+    n_low = n.lower()
+    digits = sum(ch.isdigit() for ch in raw)
+    if raw.startswith("$") and digits:
+        if n_low in _CALLOUT_UNITS:
+            return 3, f"{raw} {n}".upper()
+        return 3, raw.upper()
+    if "%" in raw and digits:
+        return 3, raw.upper()
+    if digits >= 2 and n_low in _CALLOUT_UNITS:
+        return 2, f"{raw} {n}".upper()
+    if re.fullmatch(r"(?:19|20)\d{2}", raw):
+        return 2, raw.upper()
+    if digits >= 2 and re.fullmatch(r"[\d,.]+", raw):
+        return 1, raw.upper()
+    return 0, ""
+
+
+def _extract_callouts(
+    script,
+    caption_starts: list[float],
+    caption_bands: dict | None = None,
+    min_gap: float = 5.0,
+    min_start: float = 2.6,
+    duration: float = 1.9,
+) -> list[dict]:
+    """Pick at most one callout per scene, spaced and after the hook card.
+
+    Alignment flips to the bottom band when the scene's captions were lifted
+    to the top (FIX-062), so the overlay never collides with the subtitles.
+    """
+    out: list[dict] = []
+    last_end = -1e9
+    bands = caption_bands or {}
+    for i, scene in enumerate(script.scenes):
+        stamps = getattr(scene, "timestamps", None) or []
+        if not stamps:
+            continue
+        base = caption_starts[i] if i < len(caption_starts) else 0.0
+        best: tuple[int, float, str] | None = None
+        for j, wd in enumerate(stamps):
+            nxt = str(stamps[j + 1].get("word") or "") if j + 1 < len(stamps) else ""
+            power, disp = _callout_power(str(wd.get("word") or ""), nxt)
+            if not power:
+                continue
+            t0 = base + float(wd.get("start") or 0.0)
+            if t0 < min_start or len(disp) > 16:
+                continue
+            cand = (power, t0, disp)
+            if best is None or (cand[0], -cand[1]) > (best[0], -best[1]):
+                best = cand
+        if best is None:
+            continue
+        _, t0, disp = best
+        if t0 < last_end + min_gap:
+            continue
+        try:
+            sn = int(getattr(scene, "scene_number", i + 1))
+        except Exception:
+            sn = i + 1
+        align = 2 if bands.get(sn) == "top" else 8
+        out.append({"start": round(t0, 2), "end": round(t0 + duration, 2),
+                    "text": disp, "align": align})
+        last_end = t0 + duration
+    return out
+
+
 def _assemble_with_transitions(
     clips: list[Path],
     moods: list[str | None],
@@ -1709,11 +1796,24 @@ def assemble_video(
     caption_bands = _caption_bands_for_scenes(prepared, temp_dir)
     if caption_bands:
         log.info(f"[dim]FIX-062 caption bands: {caption_bands}[/dim]")
+    # FIX-097: kinetic fact callouts (numbers/dates/money) — deterministic,
+    # from the narration's own word timestamps. GD_CALLOUTS=0 disables.
+    callouts: list[dict] = []
+    if os.environ.get("GD_CALLOUTS", "1") != "0":
+        try:
+            callouts = _extract_callouts(script, caption_starts, caption_bands)
+            if callouts:
+                log.info(
+                    f"Callout overlays: {len(callouts)} "
+                    f"({', '.join(c['text'] for c in callouts[:6])})")
+        except Exception as c_err:
+            log.warning(f"Callout extraction skipped ({c_err})")
     generate_ass_subtitles(
         all_timestamps, caption_starts, ass_path,
         caption_cfg, resolution=(width, height),
         hook_overlay_text=getattr(script, "hook_overlay_text", None),
         band_overrides=caption_bands,
+        callouts=callouts,
     )
 
     # ── Step 4: Burn subtitles and apply cinematic filters (Single Pass) ──

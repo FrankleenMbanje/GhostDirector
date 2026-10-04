@@ -1359,6 +1359,60 @@ _voice96 = (Path(__file__).parent / "pipeline" / "voice.py").read_text(encoding=
 check("missing ElevenLabs key safe-switches the whole run to edge-tts",
       "using Edge-TTS for the whole run" in _voice96)
 
+# ── 7.24 kinetic fact callouts (FIX-097) ─────────────────────────────
+print("\n[7.24] kinetic fact callouts (FIX-097)")
+from pipeline.assembler_ffmpeg import (  # noqa: E402
+    _callout_power as _cp97, _extract_callouts as _xc97,
+)
+from utils.caption_renderer import generate_ass_subtitles as _gas97  # noqa: E402
+
+check("money reads as a callout and folds the unit in",
+      _cp97("$30", "million") == (3, "$30 MILLION"))
+check("percent and years score as callouts",
+      _cp97("45%", "")[0] == 3 and _cp97("1996", "") == (2, "1996"))
+check("bare word is not a callout", _cp97("and", "") == (0, ""))
+
+
+def _sc97(n, start_words):
+    s = _S94(scene_number=n, narration="x", visual_prompt="x",
+             visual_type="web_photo", mood="dramatic")
+    s.timestamps = [{"word": w, "start": t, "end": t + 0.3} for w, t in start_words]
+    return s
+
+
+_script97 = _Sc94(
+    title="t", description="", tags=[], hook="h",
+    scenes=[
+        _sc97(1, [("deal", 0.2), ("$30", 1.0), ("million", 1.3)]),
+        _sc97(2, [("in", 0.2), ("1996", 1.0)]),
+        _sc97(3, [("42", 0.5), ("5000", 2.2)]),
+        _sc97(4, [("7", 1.0)]),
+    ],
+    total_scenes=4, estimated_duration_minutes=1.0)
+_caps97 = _xc97(_script97, [3.0, 10.0, 20.0, 0.0], {2: "top"})
+check("callouts extracted once per scene, spaced and after the hook card",
+      len(_caps97) == 3 and all(c["start"] >= 2.6 for c in _caps97),
+      str(_caps97))
+check("money callout carries the unit and the audio-timed start",
+      _caps97[0]["text"] == "$30 MILLION" and _caps97[0]["start"] == 4.0,
+      str(_caps97[:1]))
+check("callout flips to the bottom when captions were lifted to the top",
+      _caps97[1]["align"] == 2 and _caps97[0]["align"] == 8)
+check("one callout max per scene (42 wins over 5000)",
+      _caps97[2]["text"] == "42")
+
+_ass97 = TMP / "callout97.ass"
+_gas97([[]], [0.0], _ass97, {"font": "Montserrat-Bold", "font_size": 54},
+       resolution=(1080, 1920),
+       callouts=[{"start": 1.0, "end": 2.9, "text": "$30 million", "align": 8}])
+_txt97 = _ass97.read_text(encoding="utf-8")
+check("renderer defines the Callout style", "Style: Callout," in _txt97)
+check("callout event lands on the timeline with fade + alignment override",
+      "Dialogue: 2,0:00:01.00,0:00:02.90,Callout" in _txt97
+      and "\\an8\\fad(140,160)" in _txt97 and "$30 MILLION" in _txt97)
+check("callouts are opt-out-able and wired into the caption pass",
+      "GD_CALLOUTS" in _asm94 and "callouts=callouts" in _asm94)
+
 print(f"\n{'='*50}\nRESULT: {sum(1 for _, ok, _ in RESULTS if ok)} passed, "
       f"{sum(1 for _, ok, _ in RESULTS if not ok)} failed")
 sys.exit(0 if all(ok for _, ok, _ in RESULTS) else 1)
