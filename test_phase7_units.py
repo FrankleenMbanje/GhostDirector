@@ -13,6 +13,7 @@ Covers:
        (FIX-087/088/089)
   7.19 self-learning: winner-riding docs + proven-name boost (FIX-091/092)
   7.20 kinetic hook card: real motion + wired filter (FIX-093)
+  7.21 silent-tail death: TTS retry/raise + assembler guard + QC probe (FIX-094)
 """
 
 import sys
@@ -1126,6 +1127,151 @@ if _card93:
         _amber93 = int((_dist93 < 90).sum())
     check("headline type actually rendered (amber pixels visible)",
           _amber93 > 50, f"amber_px={_amber93}")
+
+# ── 7.21 no silent tails (FIX-094) ───────────────────────────────────
+print("\n[7.21] silent-tail death: TTS retry/raise, assembler guard, QC, mux")
+import asyncio as _as94  # noqa: E402
+import os as _os94  # noqa: E402
+import shutil as _sh94  # noqa: E402
+import subprocess as _sp94b  # noqa: E402
+import pipeline.voice as _vo94  # noqa: E402
+from models import Scene as _S94, Script as _Sc94  # noqa: E402
+from pipeline.assembler_ffmpeg import (  # noqa: E402
+    _narration_must_have_audio as _nma94,
+)
+from pipeline.visual_director import (  # noqa: E402
+    final_qc as _fq94, classify_qc as _cq94,
+)
+
+_ff94 = getattr(_cfg93, "FFMPEG_BIN", "ffmpeg")
+_vtmpl94 = {"voice": {"provider": "edge-tts",
+                      "voice_id": "en-US-AndrewMultilingualNeural",
+                      "natural_pauses": True}}
+
+
+def _mk94(sn, narration):
+    return _S94(scene_number=sn, narration=narration, visual_prompt="x",
+                visual_type="stock_photo", mood="hook")
+
+
+def _script94(scenes):
+    return _Sc94(title="Test", description="", tags=[], hook="h",
+                 scenes=scenes, total_scenes=len(scenes),
+                 estimated_duration_minutes=1.0)
+
+
+def _voice94(script, outdir, attempts="2"):
+    """Run generate_voices with fast retry settings; return the error or None."""
+    prev_a = _os94.environ.get("GD_TTS_ATTEMPTS")
+    prev_b = _os94.environ.get("GD_TTS_BACKOFF")
+    _os94.environ["GD_TTS_ATTEMPTS"] = attempts
+    _os94.environ["GD_TTS_BACKOFF"] = "0"
+    try:
+        _as94.run(_vo94.generate_voices(script, _vtmpl94, outdir))
+        return None
+    except RuntimeError as e:
+        return str(e)
+    finally:
+        if prev_a is None:
+            _os94.environ.pop("GD_TTS_ATTEMPTS", None)
+        else:
+            _os94.environ["GD_TTS_ATTEMPTS"] = prev_a
+        if prev_b is None:
+            _os94.environ.pop("GD_TTS_BACKOFF", None)
+        else:
+            _os94.environ["GD_TTS_BACKOFF"] = prev_b
+
+
+# -- voice stage: exhausted TTS must FAIL the stage, not ship silence --
+_orig_pauses94 = _vo94._generate_edge_tts_with_pauses
+_orig_gtts94 = _vo94._generate_gtts
+
+
+async def _fail94(*a, **k):
+    raise RuntimeError("simulated TTS outage")
+
+
+_vo94._generate_edge_tts_with_pauses = _fail94
+_vo94._generate_gtts = _fail94
+_s94 = _mk94(1, "A narrated line that must become audio.")
+_err94 = _voice94(_script94([_s94]), TMP / "vo94_fail")
+check("voice stage RAISES when TTS dies (silent scene never leaves the stage)",
+      bool(_err94) and "FIX-094" in _err94 and "no audio" in _err94,
+      (_err94 or "no raise")[:90])
+check("failed scene is recorded (no audio_path, fallback duration kept)",
+      _s94.audio_path is None and _s94.audio_duration_seconds == 5.0)
+
+# -- transient failure: attempt #2 recovers and the stage succeeds --
+_calls94 = {"n": 0}
+_tone94 = TMP / "tone94.mp3"
+_sp94b.run([_ff94, "-y", "-v", "error", "-f", "lavfi",
+            "-i", "sine=frequency=440:duration=1.2",
+            "-c:a", "libmp3lame", str(_tone94)], capture_output=True)
+
+
+async def _flaky94(text, voice, rate, pitch, out_path, seed=0):
+    _calls94["n"] += 1
+    if _calls94["n"] == 1:
+        raise RuntimeError("simulated transient hiccup")
+    _sh94.copy(_tone94, out_path)
+
+
+_vo94._generate_edge_tts_with_pauses = _flaky94
+_s94b = _mk94(1, "A narrated line that recovers on the second try.")
+_err94b = _voice94(_script94([_s94b]), TMP / "vo94_ok")
+check("voice stage retries and succeeds (attempt #2 produced real audio)",
+      _err94b is None and _calls94["n"] == 2 and _s94b.audio_path is not None
+      and (_s94b.audio_duration_seconds or 0) > 0,
+      f"err={_err94b} calls={_calls94['n']} dur={_s94b.audio_duration_seconds}")
+_vo94._generate_edge_tts_with_pauses = _orig_pauses94
+_vo94._generate_gtts = _orig_gtts94
+
+# -- assembler guard: narrated scene + no audio = refuse, not pad --
+check("assembler guard: narrated scene must have audio",
+      _nma94(_mk94(1, "This was spoken.")) is True)
+check("assembler guard: narration-free visual beat may be silent",
+      _nma94(_mk94(2, "   ")) is False)
+_asm94 = (Path(__file__).parent / "pipeline" / "assembler_ffmpeg.py"
+          ).read_text(encoding="utf-8")
+check("assembler refuses to pad a narrated scene with silence (FIX-094 raise)",
+      "refusing to pad it with silence" in _asm94)
+
+# -- mux steps must never let picture outlive its audio --
+_mux94 = re.search(
+    r"# Replace audio in video[\s\S]*?\"Replace audio with multi-track mix\"", _asm94)
+check("mix mux is pinned to the audio length (-shortest)",
+      bool(_mux94) and '"-shortest"' in _mux94.group(0))
+_norm94 = re.search(
+    r"Extract audio for normalization[\s\S]*?\"Re-mux normalized audio\"", _asm94)
+check("normalized re-mux is pinned to the audio length (-shortest)",
+      bool(_norm94) and '"-shortest"' in _norm94.group(0))
+
+# -- QC: a synthetic dead-air tail (sine 5s + 4s silence) must be CRITICAL --
+_qc94 = TMP / "qc94"
+_qc94.mkdir(exist_ok=True)
+_clean94 = _qc94 / "clean.mp4"
+_broken94 = _qc94 / "broken.mp4"
+_sp94b.run([_ff94, "-y", "-v", "error",
+            "-f", "lavfi", "-i", "color=c=0x1a2340:s=320x180:d=9:r=12",
+            "-f", "lavfi", "-i", "aevalsrc='0.3*sin(2*PI*440*t)':s=44100:d=9",
+            "-shortest", "-c:v", "libx264", "-preset", "ultrafast",
+            "-c:a", "aac", str(_clean94)], capture_output=True)
+_sp94b.run([_ff94, "-y", "-v", "error",
+            "-f", "lavfi", "-i", "color=c=0x1a2340:s=320x180:d=9:r=12",
+            "-f", "lavfi", "-i",
+            "aevalsrc='0.3*sin(2*PI*440*t)*lt(t,5)':s=44100:d=9",
+            "-shortest", "-c:v", "libx264", "-preset", "ultrafast",
+            "-c:a", "aac", str(_broken94)], capture_output=True)
+_, _issues_clean94 = _fq94(_clean94, deep_review=False)
+_, _issues_broken94 = _fq94(_broken94, deep_review=False)
+check("QC flags a dead-air tail (narration stops before the picture)",
+      any("dead-air tail" in i for i in _issues_broken94),
+      [i for i in _issues_broken94 if "dead-air" in i][:1])
+check("QC does NOT flag a healthy render whose voice runs to the end",
+      not any("dead-air tail" in i for i in _issues_clean94),
+      [i for i in _issues_clean94 if "dead-air" in i][:1])
+_crit94, _ = _cq94([i for i in _issues_broken94 if "dead-air tail" in i])
+check("dead-air tail is a CRITICAL finding (blocks upload)", len(_crit94) == 1)
 
 print(f"\n{'='*50}\nRESULT: {sum(1 for _, ok, _ in RESULTS if ok)} passed, "
       f"{sum(1 for _, ok, _ in RESULTS if not ok)} failed")

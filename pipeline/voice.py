@@ -1,5 +1,6 @@
 import sys
 import re
+import os
 import shutil
 import random
 import asyncio
@@ -343,6 +344,24 @@ async def generate_voices(script: Script, template: dict, output_dir: Path) -> S
         provider = "edge-tts"
         voice_id = voice_config.get("voice_id", "en-US-AndrewMultilingualNeural")
 
+    # FIX-094: a scene can never leave this stage without audio. The old
+    # code logged the failure and left scene.audio_path=None; the assembler
+    # then padded the scene with anullsrc, captions kept running, and the
+    # uploads shipped with audio that simply stops before the picture does
+    # (measured: 5.3s and 3.6s dead-air tails on 2026-10-04 uploads). Retry
+    # the whole engine chain; if it still fails, RAISE so the stage fails
+    # and the scheduler retries/aborts instead of shipping a broken video.
+    attempts = 3
+    try:
+        attempts = max(1, int(os.environ.get("GD_TTS_ATTEMPTS", "3")))
+    except ValueError:
+        pass
+    try:
+        backoff = max(0.0, float(os.environ.get("GD_TTS_BACKOFF", "1.5")))
+    except ValueError:
+        backoff = 1.5
+    failed_scenes: list[int] = []
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -376,52 +395,80 @@ async def generate_voices(script: Script, template: dict, output_dir: Path) -> S
                     progress.advance(task)
                     continue
 
-            try:
-                if provider == "elevenlabs":
-                    await _generate_elevenlabs(scene.narration, voice_id, template, output_path)
-                elif natural_pauses:
-                    await _generate_edge_tts_with_pauses(
-                        scene.narration, voice_id, scene_rate, scene_pitch, output_path,
-                        seed=sn,
-                    )
-                else:
-                    await _generate_edge_tts(scene.narration, voice_id, scene_rate, scene_pitch, output_path)
-            except Exception as e:
-                logger.error(f"Failed to generate audio for scene {sn} with {provider}: {e}")
-                if provider == "elevenlabs":
-                    logger.warning(f"Falling back to Edge-TTS for scene {sn}...")
-                    try:
-                        edge_voice = template.get("voice", {}).get("voice_id", "en-US-AndrewMultilingualNeural")
+            last_error = ""
+            for attempt in range(1, attempts + 1):
+                try:
+                    if provider == "elevenlabs":
+                        await _generate_elevenlabs(scene.narration, voice_id, template, output_path)
+                    elif natural_pauses:
                         await _generate_edge_tts_with_pauses(
-                            scene.narration, edge_voice, scene_rate, scene_pitch, output_path,
+                            scene.narration, voice_id, scene_rate, scene_pitch, output_path,
                             seed=sn,
                         )
-                    except Exception as edge_e:
-                        logger.error(f"Edge-TTS fallback failed for scene {sn}: {edge_e}")
+                    else:
+                        await _generate_edge_tts(scene.narration, voice_id, scene_rate, scene_pitch, output_path)
+                except Exception as e:
+                    last_error = str(e)
+                    logger.error(f"Failed to generate audio for scene {sn} with {provider}: {e}")
+                    if provider == "elevenlabs":
+                        logger.warning(f"Falling back to Edge-TTS for scene {sn}...")
+                        try:
+                            edge_voice = template.get("voice", {}).get("voice_id", "en-US-AndrewMultilingualNeural")
+                            await _generate_edge_tts_with_pauses(
+                                scene.narration, edge_voice, scene_rate, scene_pitch, output_path,
+                                seed=sn,
+                            )
+                        except Exception as edge_e:
+                            last_error = str(edge_e)
+                            logger.error(f"Edge-TTS fallback failed for scene {sn}: {edge_e}")
+                            try:
+                                await _generate_gtts(scene.narration, output_path)
+                            except Exception as fb_e:
+                                last_error = str(fb_e)
+                                logger.error(f"gTTS fallback also failed for scene {sn}: {fb_e}")
+                    else:
+                        logger.warning(f"Falling back to gTTS for scene {sn}...")
                         try:
                             await _generate_gtts(scene.narration, output_path)
-                        except Exception as fb_e:
-                            logger.error(f"gTTS fallback also failed for scene {sn}: {fb_e}")
-                else:
-                    logger.warning(f"Falling back to gTTS for scene {sn}...")
-                    try:
-                        await _generate_gtts(scene.narration, output_path)
-                    except Exception as fallback_e:
-                        logger.error(f"gTTS fallback also failed for scene {sn}: {fallback_e}")
+                        except Exception as fallback_e:
+                            last_error = str(fallback_e)
+                            logger.error(f"gTTS fallback also failed for scene {sn}: {fallback_e}")
 
-            if output_path.exists():
-                duration = _get_audio_duration(output_path)
-                if duration > 0:
-                    scene.audio_path = str(output_path)
-                    scene.audio_duration_seconds = duration
-                    logger.debug(f"Scene {sn} audio generated: {duration:.2f}s")
-                else:
-                    logger.error(f"Generated audio for scene {sn} is invalid or empty. Discarding.")
+                if output_path.exists() and _get_audio_duration(output_path) > 0:
+                    break
+                if output_path.exists():
                     output_path.unlink(missing_ok=True)
-                    scene.audio_path = None
-                    scene.audio_duration_seconds = 5.0  # Fallback duration
+                if attempt < attempts:
+                    logger.warning(
+                        f"Scene {sn}: no usable audio after attempt "
+                        f"{attempt}/{attempts} — retrying in "
+                        f"{backoff * attempt:.1f}s")
+                    await asyncio.sleep(backoff * attempt)
+
+            if output_path.exists() and _get_audio_duration(output_path) > 0:
+                duration = _get_audio_duration(output_path)
+                scene.audio_path = str(output_path)
+                scene.audio_duration_seconds = duration
+                logger.debug(f"Scene {sn} audio generated: {duration:.2f}s")
+            else:
+                logger.error(
+                    f"Scene {sn}: TTS produced no audio after {attempts} "
+                    f"attempt(s) (last error: {last_error or 'empty output'}) "
+                    f"— recording the scene as FAILED")
+                output_path.unlink(missing_ok=True)
+                scene.audio_path = None
+                scene.audio_duration_seconds = 5.0
+                failed_scenes.append(sn)
 
             progress.advance(task)
 
+    if failed_scenes:
+        raise RuntimeError(
+            f"FIX-094: TTS produced no audio for scene(s) {failed_scenes} "
+            f"after {attempts} attempt(s) each — refusing to continue, "
+            f"because a silent scene ships as dead air while the captions "
+            f"keep running. Audio already generated is kept on disk (the "
+            f"resume guard reuses it) — retry the stage, or raise "
+            f"GD_TTS_ATTEMPTS.")
     logger.info("Voice generation completed.")
     return script

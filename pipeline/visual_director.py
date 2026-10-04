@@ -1058,6 +1058,38 @@ def final_qc(
             except Exception:
                 log.info("  QC: loudness probe failed (skipped)")
 
+        # ── FIX-094: dead-air tail — did narration stop before the picture? ──
+        # The silent-scene defect ships as a digital-silence tail (measured:
+        # -91 dB vs -17 dB mid-video) while captions keep running. On every
+        # healthy render the voice runs to the cut, so compare the last
+        # window against the body; a large drop means the audio died early.
+        if dur >= 8.0 and auds:
+            try:
+                tail_win = min(3.0, max(1.5, dur / 4.0))
+
+                def _mean_db(start: float) -> float | None:
+                    pr = subprocess.run(
+                        ["ffmpeg", "-v", "info", "-ss", f"{start:.2f}",
+                         "-t", f"{tail_win:.2f}", "-i", str(video_path),
+                         "-map", "0:a:0", "-af", "volumedetect",
+                         "-f", "null", "-"],
+                        capture_output=True, text=True, timeout=60,
+                    )
+                    mm = re.search(r"mean_volume:\s*(-?\d+(?:\.\d+)?) dB", pr.stderr or "")
+                    return float(mm.group(1)) if mm else None
+
+                tail_db = _mean_db(max(0.0, dur - tail_win))
+                body_db = _mean_db(max(0.0, dur / 2 - tail_win / 2))
+                if (tail_db is not None and body_db is not None
+                        and tail_db < body_db - 8.0):
+                    issues.append(
+                        f"QC: CRITICAL dead-air tail — last {tail_win:.1f}s "
+                        f"average {tail_db:.0f} dB vs {body_db:.0f} dB "
+                        f"mid-video: narration stops before the picture "
+                        f"(silent-scene defect)")
+            except Exception:
+                log.info("  QC: tail-silence probe failed (skipped)")
+
         ok = not issues
         if report_dir:
             try:
@@ -1099,7 +1131,7 @@ def final_qc(
 CRITICAL_PATTERNS = (
     "no video stream", "resolution", "aspect ratio", "NO audio",
     "suspiciously short", "undecodable", "crashed", "CRITICAL flat/blank",
-    "rendering failure", "CRITICAL shorts duration",
+    "rendering failure", "CRITICAL shorts duration", "dead-air tail",
 )
 
 

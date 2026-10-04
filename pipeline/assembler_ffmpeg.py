@@ -1030,6 +1030,17 @@ def _prepare_video_cuts(
 _MAX_FILTER_INPUTS = 8
 
 
+def _narration_must_have_audio(scene) -> bool:
+    """FIX-094: true when the scene's narration was supposed to become audio.
+
+    A narrated scene arriving at the assembler with scene.audio_path unset is
+    the silent-tail defect; only genuinely narration-free visual beats may be
+    padded with anullsrc. Kept as a one-line predicate so the rule is unit
+    testable without rendering a video.
+    """
+    return bool((getattr(scene, "narration", "") or "").strip())
+
+
 def _assemble_with_transitions(
     clips: list[Path],
     moods: list[str | None],
@@ -1523,8 +1534,19 @@ def assemble_video(
             clip_with_audio = temp_dir / f"scene_{idx:02d}_with_audio.mp4"
             add_audio_to_video(prepared_path, Path(scene.audio_path), clip_with_audio)
             scene_clips_with_audio.append(clip_with_audio)
+        elif _narration_must_have_audio(scene):
+            # FIX-094: a narrated scene with no audio is the silent-tail
+            # defect — the narration simply stops while the picture and
+            # captions keep running (measured: 3-5s of -91 dB dead air on
+            # 2026-10-04 uploads). The voice stage already refuses to finish
+            # in this state; this is the last line of defense.
+            raise RuntimeError(
+                f"FIX-094: scene {idx} has narration but no usable audio "
+                f"(audio_path={getattr(scene, 'audio_path', None)!r}) — "
+                f"refusing to pad it with silence. Re-run the voice stage; "
+                f"already-generated scene audio is reused from disk.")
         else:
-            log.warning(f"Scene {idx} has no audio. Adding silent audio track.")
+            log.info(f"Scene {idx} is a narration-free visual beat — adding silent audio track.")
             clip_with_audio = temp_dir / f"scene_{idx:02d}_with_silent_audio.mp4"
             run_ffmpeg(
                 [
@@ -1805,6 +1827,10 @@ def assemble_video(
             "-i", str(mixed_audio),
             "-c:v", "copy", "-c:a", "aac",
             "-map", "0:v:0", "-map", "1:a:0",
+            # FIX-094: never let picture outlive its audio — without
+            # -shortest a shorter mix leaves a silent tail behind burned-in
+            # captions that keep "speaking" to nobody.
+            "-shortest",
             str(final_with_audio),
         ],
         "Replace audio with multi-track mix"
@@ -1831,6 +1857,7 @@ def assemble_video(
             "-i", str(norm_audio),
             "-c:v", "copy", "-c:a", "aac",
             "-map", "0:v:0", "-map", "1:a:0",
+            "-shortest",  # FIX-094: same guarantee as the mix mux above
             str(normalized),
         ],
         "Re-mux normalized audio"
