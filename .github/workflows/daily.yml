@@ -59,6 +59,25 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # FIX-101: whisper_timestamped loads its silero VAD through torch.hub,
+      # whose interactive trust prompt stalls on a non-interactive runner —
+      # every cloud scene then fell back to evenly-spaced fake word timings
+      # (captions, FIX-097 callouts and punch-cut points all starved).
+      # Pre-clone with trust_repo=True so the real VAD is available; the
+      # pipeline also retries without VAD if this ever fails.
+      - name: Pre-cache Whisper VAD (silero)
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          try:
+              import torch
+              torch.hub.load("snakers4/silero-vad", "silero_vad",
+                             trust_repo=True, verbose=False)
+              print("silero VAD cached for whisper_timestamped")
+          except Exception as e:
+              print(f"silero pre-cache failed (whisper will run without VAD): {e}")
+          PY
+
       - name: Restore production state (DB, no-repeat ledger)
         uses: actions/cache@v4
         with:

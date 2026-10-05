@@ -5,6 +5,7 @@ Runs narration audio through Whisper (locally) to extract
 word-level timestamps for animated captions.
 """
 
+import os
 import sys
 import json
 from pathlib import Path
@@ -40,6 +41,9 @@ def _load_whisper_model():
     return model
 
 
+_vad_down = False  # FIX-101: process-wide memory that VAD cannot load
+
+
 def extract_word_timestamps(audio_path: Path, model=None) -> list[dict]:
     """
     Extract word-level timestamps from an audio file.
@@ -51,6 +55,7 @@ def extract_word_timestamps(audio_path: Path, model=None) -> list[dict]:
     Returns:
         List of dicts: [{"word": "Hello", "start": 0.0, "end": 0.45}, ...]
     """
+    global _vad_down
     import whisper_timestamped as whisper
 
     if model is None:
@@ -58,13 +63,35 @@ def extract_word_timestamps(audio_path: Path, model=None) -> list[dict]:
 
     log.info(f"Extracting timestamps from: {audio_path.name}")
 
-    result = whisper.transcribe(
-        model,
-        str(audio_path),
-        language=config.WHISPER_LANGUAGE,
-        detect_disfluencies=False,
-        vad=True,  # Voice Activity Detection to reduce hallucinations
-    )
+    use_vad = (os.environ.get("GD_WHISPER_VAD", "1") != "0") and not _vad_down
+    try:
+        result = whisper.transcribe(
+            model,
+            str(audio_path),
+            language=config.WHISPER_LANGUAGE,
+            detect_disfluencies=False,
+            vad=use_vad,  # VAD reduces hallucinations on noisy audio
+        )
+    except Exception as e:
+        if not use_vad:
+            raise
+        # FIX-101: the silero VAD loads through torch.hub, whose interactive
+        # trust prompt stalls on the non-interactive CI runner — every cloud
+        # scene then fell back to EVENLY-SPACED fake word timings, starving
+        # caption sync, callout timing and cut points. TTS narration is clean
+        # speech, so a real no-VAD pass beats fake timings; remember the
+        # failure so later scenes don't relitigate it.
+        _vad_down = True
+        log.warning(
+            f"Whisper VAD unavailable ({str(e)[:120]}) — retrying without "
+            f"VAD for the rest of this run")
+        result = whisper.transcribe(
+            model,
+            str(audio_path),
+            language=config.WHISPER_LANGUAGE,
+            detect_disfluencies=False,
+            vad=False,
+        )
 
     # Flatten word-level timestamps from all segments
     words = []

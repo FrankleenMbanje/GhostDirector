@@ -1525,6 +1525,47 @@ check("voice stage stores the TRIMMED duration (padded 3.8s -> ~1.65s) (FIX-100)
       and 1.3 < (_s100.audio_duration_seconds or 0) < 1.95,
       f"dur={_s100.audio_duration_seconds}")
 
+# ── 7.28 Whisper VAD fallback + CI pre-cache (FIX-101) ────────────────
+print("\n[7.28] Whisper VAD fallback (FIX-101)")
+import whisper_timestamped as _wt101  # noqa: E402
+import pipeline.timestamps as _ts101  # noqa: E402
+
+_calls101: list[bool] = []
+
+
+def _fake_transcribe(model, audio, **kw):
+    _calls101.append(bool(kw.get("vad")))
+    if kw.get("vad"):
+        raise RuntimeError("Problem when installing silero with version v3.1")
+    return {"segments": [{"words": [
+        {"text": "hello", "start": 0.0, "end": 0.2, "confidence": 0.9},
+        {"text": "world", "start": 0.3, "end": 0.6, "confidence": 0.9}]}]}
+
+
+_orig_wt101 = _wt101.transcribe
+_wt101.transcribe = _fake_transcribe
+_ts101._vad_down = False
+_w101 = _ts101.extract_word_timestamps(TMP / "vo100" / "s.mp3", model=object())
+check("a VAD failure falls back to real no-VAD Whisper timings (FIX-101)",
+      len(_w101) == 2 and _calls101 == [True, False], str(_calls101))
+check("the VAD failure is remembered for the rest of the run",
+      _ts101._vad_down is True)
+_calls101.clear()
+_ts101.extract_word_timestamps(TMP / "vo100" / "s2.mp3", model=object())
+check("later scenes skip the dead VAD (one call, vad=False) (FIX-101)",
+      _calls101 == [False], str(_calls101))
+_os94.environ["GD_WHISPER_VAD"] = "0"
+_ts101._vad_down = False
+_calls101.clear()
+_ts101.extract_word_timestamps(TMP / "vo100" / "s3.mp3", model=object())
+_os94.environ.pop("GD_WHISPER_VAD", None)
+_wt101.transcribe = _orig_wt101
+check("GD_WHISPER_VAD=0 disables VAD up front (FIX-101)",
+      _calls101 == [False], str(_calls101))
+check("workflow pre-caches silero with trust_repo (FIX-101)",
+      "silero-vad" in _wf99 and "trust_repo=True" in _wf99)
+_ts101._vad_down = False
+
 print(f"\n{'='*50}\nRESULT: {sum(1 for _, ok, _ in RESULTS if ok)} passed, "
       f"{sum(1 for _, ok, _ in RESULTS if not ok)} failed")
 sys.exit(0 if all(ok for _, ok, _ in RESULTS) else 1)
