@@ -1123,6 +1123,47 @@ def final_qc(
             except Exception:
                 log.info("  QC: tail-silence probe failed (skipped)")
 
+        # ── FIX-100: mid-video dead spots — holes the tail check can't see ──
+        # A clip's padded edge (or a dropped chunk) leaves digital silence in
+        # the MIDDLE of the render; Eskl7JKbSxU (2026-10-05) shipped 1.16s at
+        # 46.0-47.2s. Voice-stage trimming is the prevention; this is the
+        # detection. Big holes (>= 2s) are CRITICAL, brief ones are warnings.
+        if dur >= 8.0 and auds:
+            try:
+                sd = subprocess.run(
+                    ["ffmpeg", "-v", "info", "-i", str(video_path),
+                     "-map", "0:a:0", "-af",
+                     "silencedetect=noise=-40dB:d=0.8", "-f", "null", "-"],
+                    capture_output=True, text=True, timeout=120,
+                )
+                s_starts = [float(x) for x in re.findall(
+                    r"silence_start: (-?[0-9.]+)", sd.stderr or "")]
+                s_ends = [(float(a), float(b)) for a, b in re.findall(
+                    r"silence_end: (-?[0-9.]+) \| silence_duration: ([0-9.]+)",
+                    sd.stderr or "")]
+                holes: list[tuple[float, float, float]] = []
+                for i, s in enumerate(s_starts):
+                    seg_len = s_ends[i][1] if i < len(s_ends) else dur - s
+                    e = s_ends[i][0] if i < len(s_ends) else dur
+                    if s <= 1.0:
+                        continue  # hook-card lead-in is by design
+                    if e >= dur - 0.2:
+                        continue  # the tail is FIX-094's job
+                    holes.append((s, e, seg_len))
+                big = [h for h in holes if h[2] >= 2.0]
+                if big:
+                    s, _e, seg_len = max(big, key=lambda x: x[2])
+                    issues.append(
+                        f"QC: CRITICAL mid-video silence — {seg_len:.1f}s of "
+                        f"dead air at {s:.1f}s (narration gap)")
+                for s, _e, seg_len in sorted(holes, key=lambda x: -x[2])[:2]:
+                    if seg_len < 2.0:
+                        issues.append(
+                            f"QC: mid-video dead spot {seg_len:.1f}s at "
+                            f"{s:.1f}s (brief narration gap)")
+            except Exception:
+                log.info("  QC: mid-silence probe failed (skipped)")
+
         ok = not issues
         if report_dir:
             try:
@@ -1165,6 +1206,7 @@ CRITICAL_PATTERNS = (
     "no video stream", "resolution", "aspect ratio", "NO audio",
     "suspiciously short", "undecodable", "crashed", "CRITICAL flat/blank",
     "rendering failure", "CRITICAL shorts duration", "dead-air tail",
+    "mid-video silence",
 )
 
 

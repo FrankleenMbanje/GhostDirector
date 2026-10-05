@@ -1455,6 +1455,76 @@ check("workflow retry reads the real exit code (pipefail + $?, not PIPESTATUS)",
       "set -o pipefail" in _wf99 and "code=$?" in _wf99
       and "code=${PIPESTATUS" not in _wf99)
 
+# ── 7.27 TTS edge trim + mid-video silence QC (FIX-100) ────────────────
+print("\n[7.27] TTS edge trim + mid-video silence detection (FIX-100)")
+from pipeline.voice import trim_clip_edges as _tc100  # noqa: E402
+
+_pad100 = _qc98 / "pad100.mp3"
+# 0.8s lead silence + 1.2s tone + 1.8s trail silence = an engine-padded clip
+_sp94b.run([_ff94, "-y", "-v", "error", "-f", "lavfi", "-i",
+            "aevalsrc='0.3*sin(2*PI*440*t)*between(t,0.8,2.0)':s=44100:d=3.8",
+            "-c:a", "libmp3lame", str(_pad100)], capture_output=True)
+_dur_before100 = float(_sp94b.run(
+    ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+     "-of", "csv=p=0", str(_pad100)],
+    capture_output=True, text=True).stdout.strip() or 0)
+_dur_after100 = _tc100(_pad100)
+check("padded TTS clip is trimmed at both edges (FIX-100)",
+      _dur_before100 > 3.5 and 1.3 < _dur_after100 < 1.95,
+      f"{_dur_before100:.2f}s -> {_dur_after100:.2f}s")
+check("edge trim is idempotent (second pass is a no-op)",
+      abs(_tc100(_pad100) - _dur_after100) < 0.05)
+
+_hole100 = _qc98 / "hole100.mp4"
+_sp94b.run([_ff94, "-y", "-v", "error",
+            "-f", "lavfi", "-i", "color=c=0x203040:s=320x180:d=10:r=12",
+            "-f", "lavfi", "-i",
+            "aevalsrc='0.3*sin(2*PI*440*t)*between(t,0,5)+0.3*sin(2*PI*440*t)*between(t,6.2,10)':s=44100:d=10",
+            "-shortest", "-c:v", "libx264", "-preset", "ultrafast",
+            "-c:a", "aac", str(_hole100)], capture_output=True)
+_, _iss100 = _fq94(_hole100, deep_review=False)
+check("QC warns on a brief (1.2s) mid-video hole, without blocking (FIX-100)",
+      any("dead spot" in i for i in _iss100)
+      and not any("mid-video silence" in i for i in _iss100),
+      [i for i in _iss100 if "dead spot" in i or "mid-video silence" in i][:2])
+
+_big100 = _qc98 / "big100.mp4"
+_sp94b.run([_ff94, "-y", "-v", "error",
+            "-f", "lavfi", "-i", "color=c=0x203040:s=320x180:d=10:r=12",
+            "-f", "lavfi", "-i",
+            "aevalsrc='0.3*sin(2*PI*440*t)*between(t,0,4)+0.3*sin(2*PI*440*t)*between(t,6.6,10)':s=44100:d=10",
+            "-shortest", "-c:v", "libx264", "-preset", "ultrafast",
+            "-c:a", "aac", str(_big100)], capture_output=True)
+_, _iss_big100 = _fq94(_big100, deep_review=False)
+_crit100, _ = _cq94(_iss_big100)
+check("a 2.6s mid-video hole is CRITICAL (blocks upload) (FIX-100)",
+      any("mid-video silence" in i for i in _crit100),
+      [i for i in _crit100 if "mid-video" in i][:1])
+
+_, _iss_clean100 = _fq94(_clean94, deep_review=False)
+check("clean render gains no mid-silence findings (FIX-100)",
+      not any("dead spot" in i or "mid-video silence" in i
+              for i in _iss_clean100))
+
+# wiring: the voice stage must store the TRIMMED duration in the scene
+_orig_edge100 = _vo94._generate_edge_tts_with_pauses
+
+
+async def _padded100(text, voice, rate, pitch, out_path, seed=0):
+    _sp94b.run([_ff94, "-y", "-v", "error", "-f", "lavfi", "-i",
+                "aevalsrc='0.3*sin(2*PI*440*t)*between(t,0.8,2.0)':s=44100:d=3.8",
+                "-c:a", "libmp3lame", str(out_path)], capture_output=True)
+
+
+_vo94._generate_edge_tts_with_pauses = _padded100
+_s100 = _mk94(1, "A line that arrives with engine padding on both edges.")
+_as94.run(_vo94.generate_voices(_script94([_s100]), _vtmpl94, TMP / "vo100"))
+_vo94._generate_edge_tts_with_pauses = _orig_edge100
+check("voice stage stores the TRIMMED duration (padded 3.8s -> ~1.65s) (FIX-100)",
+      _s100.audio_path is not None
+      and 1.3 < (_s100.audio_duration_seconds or 0) < 1.95,
+      f"dur={_s100.audio_duration_seconds}")
+
 print(f"\n{'='*50}\nRESULT: {sum(1 for _, ok, _ in RESULTS if ok)} passed, "
       f"{sum(1 for _, ok, _ in RESULTS if not ok)} failed")
 sys.exit(0 if all(ok for _, ok, _ in RESULTS) else 1)

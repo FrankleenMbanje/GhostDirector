@@ -253,6 +253,79 @@ def _get_audio_duration(audio_path: Path) -> float:
         logger.error(f"Failed to get audio duration for {audio_path}: {e}")
         return 0.0
 
+
+def trim_clip_edges(audio_path: Path, keep_s: float = 0.20,
+                    min_gap_s: float = 0.50) -> float:
+    """FIX-100: cut OVERSIZED leading/trailing silence from a TTS clip.
+
+    Every engine pads its clips (edge-tts, ElevenLabs and gTTS all do), and a
+    padded edge is the source of the dead spots the tail check cannot see:
+    Eskl7JKbSxU (2026-10-05) shipped 1.16s of digital silence at 46.0-47.2s
+    mid-short. Edge silence longer than min_gap_s is reduced to keep_s;
+    sentence pauses INSIDE the clip are untouched. Idempotent — a clip
+    already inside the budget is returned unchanged. GD_TTS_TRIM=0 disables.
+    Returns the final duration (0.0 only when the file cannot be probed).
+    """
+    dur = _get_audio_duration(audio_path)
+    if dur <= 0:
+        return 0.0
+    if os.environ.get("GD_TTS_TRIM", "1") == "0":
+        return dur
+    try:
+        p = subprocess.run(
+            ["ffmpeg", "-v", "info", "-i", str(audio_path),
+             "-af", "silencedetect=noise=-40dB:d=0.05", "-f", "null", "-"],
+            capture_output=True, text=True, timeout=30,
+        )
+        starts = [float(x) for x in
+                  re.findall(r"silence_start: (-?[0-9.]+)", p.stderr or "")]
+        ends = [(float(a), float(b)) for a, b in re.findall(
+            r"silence_end: (-?[0-9.]+) \| silence_duration: ([0-9.]+)",
+            p.stderr or "")]
+        lead = 0.0
+        trail = 0.0
+        for i, s in enumerate(starts):
+            seg_len = ends[i][1] if i < len(ends) else dur - s
+            e = ends[i][0] if i < len(ends) else dur
+            if s <= 0.02:
+                lead = max(lead, seg_len)
+            if e >= dur - 0.02:
+                trail = max(trail, seg_len)
+    except Exception:
+        return dur  # the trim must never break a stage
+    if lead <= min_gap_s and trail <= min_gap_s:
+        return dur
+
+    new_start = max(0.0, lead - keep_s)
+    new_end = dur - max(0.0, trail - keep_s)
+    span = new_end - new_start
+    if span <= 0.2:
+        return dur
+    tmp = audio_path.with_suffix(".trim.mp3")
+    for cmd in (
+        ["ffmpeg", "-y", "-v", "error", "-ss", f"{new_start:.3f}",
+         "-t", f"{span:.3f}", "-i", str(audio_path), "-c", "copy", str(tmp)],
+        ["ffmpeg", "-y", "-v", "error", "-ss", f"{new_start:.3f}",
+         "-t", f"{span:.3f}", "-i", str(audio_path), "-c:a", "libmp3lame",
+         "-q:a", "4", str(tmp)],
+    ):
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if r.returncode == 0 and tmp.exists() and tmp.stat().st_size > 1024:
+                trimmed = _get_audio_duration(tmp)
+                if trimmed > 0.2:
+                    tmp.replace(audio_path)
+                    logger.info(
+                        f"FIX-100: trimmed {lead:.2f}s lead / {trail:.2f}s "
+                        f"trail silence from {audio_path.name} "
+                        f"({dur:.2f}s -> {trimmed:.2f}s)")
+                    return trimmed
+        except Exception:
+            pass
+        tmp.unlink(missing_ok=True)
+    return dur
+
+
 async def _generate_gtts(text: str, output_path: Path):
     """Fallback: Generate audio using Google Translate TTS."""
     def _sync():
@@ -388,7 +461,9 @@ async def generate_voices(script: Script, template: dict, output_dir: Path) -> S
             # interrupted run resumes instead of re-spending TTS time (and,
             # for ElevenLabs, money) on every scene.
             if output_path.exists() and output_path.stat().st_size > 1024:
-                existing_duration = _get_audio_duration(output_path)
+                # FIX-100: resumed clips get the edge trim too (idempotent),
+                # so an interrupted run still ships gap-free narration.
+                existing_duration = trim_clip_edges(output_path)
                 if existing_duration > 0:
                     scene.audio_path = str(output_path)
                     scene.audio_duration_seconds = existing_duration
@@ -446,7 +521,11 @@ async def generate_voices(script: Script, template: dict, output_dir: Path) -> S
                     await asyncio.sleep(backoff * attempt)
 
             if output_path.exists() and _get_audio_duration(output_path) > 0:
-                duration = _get_audio_duration(output_path)
+                # FIX-100: trim the engine's edge padding before the duration
+                # drives the scene length (a padded edge = a mid-video hole).
+                duration = trim_clip_edges(output_path)
+                if duration <= 0:
+                    duration = _get_audio_duration(output_path)
                 scene.audio_path = str(output_path)
                 scene.audio_duration_seconds = duration
                 logger.debug(f"Scene {sn} audio generated: {duration:.2f}s")
