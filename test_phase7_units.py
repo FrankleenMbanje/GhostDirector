@@ -1413,6 +1413,32 @@ check("callout event lands on the timeline with fade + alignment override",
 check("callouts are opt-out-able and wired into the caption pass",
       "GD_CALLOUTS" in _asm94 and "callouts=callouts" in _asm94)
 
+# ── 7.25 QC samples stay inside the exported render (FIX-098) ──────────
+print("\n[7.25] QC never probes past the exported end (FIX-098)")
+_qc98 = TMP / "qc98"
+_qc98.mkdir(exist_ok=True)
+_proj98 = TMP / "proj98"
+_proj98.mkdir(exist_ok=True)
+_render98 = _qc98 / "render98.mp4"
+_sp94b.run([_ff94, "-y", "-v", "error",
+            "-f", "lavfi", "-i", "color=c=0x203040:s=320x180:d=6:r=12",
+            "-f", "lavfi", "-i",
+            "aevalsrc='0.3*sin(2*PI*440*t)':s=44100:d=6",
+            "-shortest", "-c:v", "libx264", "-preset", "ultrafast",
+            "-c:a", "aac", str(_render98)], capture_output=True)
+# The PLAN's scene map runs past the 6.0s render (scene 2: 5.0 + 4.0 ->
+# midpoint 7.0s) — the same drift that rejected two real shorts on
+# 2026-10-05 with a false critical "frame at 46s/44s undecodable".
+(_proj98 / "timeline.json").write_text(
+    json.dumps({"scenes": [
+        {"scene_number": 1, "start_seconds": 0.0, "duration_seconds": 5.0},
+        {"scene_number": 2, "start_seconds": 5.0, "duration_seconds": 4.0}]}),
+    encoding="utf-8")
+_, _issues98 = _fq94(_render98, project_dir=_proj98, deep_review=False)
+check("scene-map tail past the render end is not 'undecodable' (FIX-098)",
+      not any("undecodable" in i for i in _issues98),
+      [i for i in _issues98 if "undecodable" in i][:1])
+
 print(f"\n{'='*50}\nRESULT: {sum(1 for _, ok, _ in RESULTS if ok)} passed, "
       f"{sum(1 for _, ok, _ in RESULTS if not ok)} failed")
 sys.exit(0 if all(ok for _, ok, _ in RESULTS) else 1)

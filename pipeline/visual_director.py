@@ -891,9 +891,17 @@ def final_qc(
         sample_times = [dur * (i + 0.5) / n for i in range(n)]
         if smap:
             for s in smap:
+                # FIX-098: the scene map comes from the PLAN, so its tail can
+                # run past the exported file (audio re-mux / tail trim).
+                # Probing past the render returns no frame and used to be
+                # reported as a critical "frame undecodable" — on 2026-10-05
+                # two shorts were rejected on t=46s/44s against 45.3s/43.6s
+                # renders that were actually fine. Only midpoints that exist
+                # inside the exported run are sampled.
                 if s["dur"] >= 1.0:
                     mid = s["start"] + s["dur"] / 2
-                    if all(abs(mid - t) > 1.2 for t in sample_times):
+                    if mid <= dur - 0.5 and all(abs(mid - t) > 1.2
+                                                for t in sample_times):
                         sample_times.append(mid)
             sample_times.sort()
             sample_times = sample_times[:36]  # bounded for the review pass
