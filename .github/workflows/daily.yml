@@ -159,10 +159,17 @@ jobs:
           # only when NOTHING shipped — that is the case this outer loop
           # rescues. The daily gate makes each attempt idempotent /
           # reclaimable.
+          # FIX-099: `${PIPESTATUS[0]}` here read EVAL's status, and eval
+          # returns the TEE's status — so a crashed production read as exit 0
+          # (run 37297238569, 2026-10-05: UnboundLocalError in the ad-hoc
+          # path, step reported success, rescue retry never fired). With
+          # pipefail + `$?` the real command status drives the loop.
+          set +e
+          set -o pipefail
           for attempt in 1 2 3; do
             echo "== Attempt $attempt at $(date -u +%H:%M) UTC =="
             eval "$CMD_LINE 2>&1 | tee output/_daily.log"
-            code=${PIPESTATUS[0]}
+            code=$?
             if [ "$code" -eq 0 ]; then exit 0; fi
             echo "Attempt $attempt failed (exit $code) - cooling down 10 min"
             sleep 600

@@ -311,13 +311,13 @@ async def run_trending_short(
     # correct for the scheduled day — makes every extra-short dispatch die as
     # a "duplicate" instead of producing the extra video.
     adhoc = bool(_os.environ.get("GD_ADHOC"))
-    if recorder.duplicate and not within_daily and not adhoc:
-        say("[yellow]Today's production already exists — skipping duplicate run.[/yellow]")
-        return {"ok": False, "reason": "duplicate_daily_run"}
-    if recorder.duplicate and adhoc:
-        say("[dim]Ad-hoc extra: today's daily run is already published — "
-            "producing anyway (no-repeat ledger still applies).[/dim]")
 
+    # FIX-099: `say` must exist BEFORE the duplicate guards — both branches
+    # below call it, and a later `def say` makes the name local, so the first
+    # reference raised UnboundLocalError: the daily-skip path crashed instead
+    # of skipping gracefully, and the ad-hoc extra (whose whole point is to
+    # produce past the lock) crashed before producing anything (run
+    # 37297238569, 2026-10-05).
     console = None
     try:
         from rich.console import Console
@@ -330,6 +330,13 @@ async def run_trending_short(
             console.print(msg)
         else:
             print(msg)
+
+    if recorder.duplicate and not within_daily and not adhoc:
+        say("[yellow]Today's production already exists — skipping duplicate run.[/yellow]")
+        return {"ok": False, "reason": "duplicate_daily_run"}
+    if recorder.duplicate and adhoc:
+        say("[dim]Ad-hoc extra: today's daily run is already published — "
+            "producing anyway (no-repeat ledger still applies).[/dim]")
 
     banner = ("The Fame Files — trending news short" 
               if channel == config.CHANNEL_FAMEFILES 

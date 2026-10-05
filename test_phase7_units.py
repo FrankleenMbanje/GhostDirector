@@ -1439,6 +1439,22 @@ check("scene-map tail past the render end is not 'undecodable' (FIX-098)",
       not any("undecodable" in i for i in _issues98),
       [i for i in _issues98 if "undecodable" in i][:1])
 
+# ── 7.26 ad-hoc extras survive the daily lock; failures visible (FIX-099) ──
+print("\n[7.26] ad-hoc extras + workflow failure detection (FIX-099)")
+_ts99 = (Path(__file__).parent / "pipeline" / "trending_short.py").read_text(
+    encoding="utf-8")
+_i_say99 = _ts99.find("def say(msg")
+_i_dup99 = _ts99.find("skipping duplicate run")
+_i_adhoc99 = _ts99.find("Ad-hoc extra")
+check("say() is defined before the daily-skip / ad-hoc branches call it (FIX-099)",
+      -1 < _i_say99 < _i_dup99 and -1 < _i_say99 < _i_adhoc99,
+      f"say={_i_say99} dup={_i_dup99} adhoc={_i_adhoc99}")
+_wf99 = (Path(__file__).parent / ".github" / "workflows" / "daily.yml").read_text(
+    encoding="utf-8")
+check("workflow retry reads the real exit code (pipefail + $?, not PIPESTATUS)",
+      "set -o pipefail" in _wf99 and "code=$?" in _wf99
+      and "code=${PIPESTATUS" not in _wf99)
+
 print(f"\n{'='*50}\nRESULT: {sum(1 for _, ok, _ in RESULTS if ok)} passed, "
       f"{sum(1 for _, ok, _ in RESULTS if not ok)} failed")
 sys.exit(0 if all(ok for _, ok, _ in RESULTS) else 1)
