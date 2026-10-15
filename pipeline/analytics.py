@@ -32,6 +32,7 @@ keeps the packaging join real instead of guessed.
 from __future__ import annotations
 
 import json
+import math
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -68,6 +69,7 @@ def load_store(path: Path | None = None) -> dict:
 
 def save_store(store: dict, path: Path | None = None) -> None:
     path = Path(path) if path else config.ANALYTICS_STORE_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(store, indent=1, ensure_ascii=False), encoding="utf-8")
 
 
@@ -85,15 +87,17 @@ def eligible_elapsed_percent(length_seconds: float) -> list[float]:
             0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0]
 
 
-def relative_retention_curve(elapsed_rows: list[dict]) -> list[dict]:
+def relative_retention_curve(elapsed_rows: list[dict], input_unit: str = "ratio") -> list[dict]:
     """Normalize an audienceWatchRatio response into a clean curve.
 
     `elapsed_rows` items: {"elapsedVideoTimeRatio": "0.05",
                            "viewPercentRemaining": 0.83}
     Returns [{"ratio": 0.05, "remaining_percent": 83.0}, ...] sorted,
-    monotonic-clamped so later points never exceed earlier ones (API noise
-    occasionally reports small upticks; clamping keeps the join honest).
+    Replays can legitimately exceed 100% or rise at later points. Preserve
+    that signal. Legacy percentage imports must set input_unit="percent".
     """
+    if input_unit not in ("ratio", "percent"):
+        raise ValueError("input_unit must be ratio or percent")
     points: list[tuple[float, float]] = []
     for row in elapsed_rows or []:
         try:
@@ -101,15 +105,12 @@ def relative_retention_curve(elapsed_rows: list[dict]) -> list[dict]:
             rem = float(row.get("viewPercentRemaining", "nan"))
         except (TypeError, ValueError):
             continue
-        if 0.0 <= ratio <= 1.0 and 0.0 <= rem <= 100.0:
-            points.append((ratio, rem * 100.0 if rem <= 1.0 else rem))
+        if 0.0 <= ratio <= 1.0 and math.isfinite(rem) and rem >= 0:
+            points.append((ratio, rem * 100.0 if input_unit == "ratio" else rem))
     points.sort()
 
     curve: list[dict] = []
-    ceiling = 100.0
     for ratio, rem in points:
-        rem = min(rem, ceiling)
-        ceiling = rem
         curve.append({"ratio": round(ratio, 4), "remaining_percent": round(rem, 2)})
     return curve
 
@@ -199,7 +200,7 @@ def join_ctr_to_packaging(
         row = None
         url = entry.get("youtube_url") or ""
         if "youtu" in url:
-            vid = url.rstrip("/").split("/")[-1].split("?")[0]
+            vid = _video_id_from(url)
             row = videos.get(vid)
         if row is None:
             title = (entry.get("title_used") or "").strip().lower()
@@ -317,7 +318,7 @@ def sync_channel(channel: str = "default", days: int = LOOKBACK_DAYS,
     """
     from pipeline.uploader import _yt_service_with_scopes
 
-    youtube = _yt_service_with_scopes(channel=channel)   # Data API (uploads + lengths)
+    youtube = _yt_service_with_scopes(kind="analytics", channel=channel)
     yta = _yt_analytics_service(channel=channel)         # Analytics API (curves)
 
     uploads = _list_my_uploads(youtube)
@@ -329,6 +330,10 @@ def sync_channel(channel: str = "default", days: int = LOOKBACK_DAYS,
     store = load_store()
     notes: list[str] = []
     synced = skipped = 0
+    try:
+        store.setdefault("channels", {})[channel] = channel_growth_metrics(youtube, yta, end)
+    except Exception as e:
+        notes.append(f"Channel growth report unavailable ({e}); previous snapshot retained")
 
     for up in uploads:
         vid = up["video_id"]
@@ -369,11 +374,14 @@ def sync_channel(channel: str = "default", days: int = LOOKBACK_DAYS,
                 {"scene_drops": [], "worst_scene": None, "coverage": {}})
 
         store["videos"][vid] = {
+            **store["videos"].get(vid, {}),  # preserve Studio CTR imports
             "title": live_title,
             "channel": channel,
             "published_at": up["published_at"],
             "synced_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "length_seconds": length_seconds,
+            "window_start": start.isoformat(),
+            "window_end": end.isoformat(),
             **metrics,
             "retention_curve": curve,
             "scene_drops": join["scene_drops"],
@@ -390,7 +398,8 @@ def sync_channel(channel: str = "default", days: int = LOOKBACK_DAYS,
         joined = join_ctr_to_packaging(store, state.get("packaging_log", []))
         if joined:
             state["packaging_log"] = joined
-            channel_state._save(state, channel)
+            if write:
+                channel_state._save(state, channel)
             notes.append(f"CTR joined into packaging log ({state_path.name})")
     except Exception as e:
         notes.append(f"packaging CTR join failed: {e}")
@@ -406,6 +415,44 @@ def sync_channel(channel: str = "default", days: int = LOOKBACK_DAYS,
     log.info(f"Analytics sync: {synced} synced, {skipped} skipped")
     return {"synced": synced, "skipped": skipped,
             "store": str(config.ANALYTICS_STORE_PATH), "notes": notes}
+
+
+def channel_growth_metrics(youtube, yta, end) -> dict:
+    """Dated, content-type-separated observations; never YPP eligibility.
+
+    YouTube Studio's Earn tab is the authority for valid public hours and
+    valid public Shorts views. Analytics includes ineligible watch time.
+    """
+    identity = youtube.channels().list(part="snippet,statistics", mine=True).execute()["items"][0]
+    result = {"channel_id": identity["id"],
+              "title": identity["snippet"]["title"],
+              "subscribers": int(identity["statistics"].get("subscriberCount", 0)),
+              "synced_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+              "valid_public_watch_hours": None,
+              "valid_public_shorts_views": None,
+              "eligibility_source": "YouTube Studio > Earn (not provided by Analytics)"}
+    for days in (90, 365):
+        start = end - timedelta(days=days - 1)
+        response = yta.reports().query(
+            ids="channel==MINE", startDate=start.isoformat(), endDate=end.isoformat(),
+            dimensions="creatorContentType",
+            metrics="views,engagedViews,estimatedMinutesWatched").execute()
+        columns = [c["name"] for c in response.get("columnHeaders", [])]
+        rows = [dict(zip(columns, row)) for row in response.get("rows", [])]
+        result[f"window_{days}d"] = {
+            "start": start.isoformat(), "end": end.isoformat(),
+            "content_types": {r["creatorContentType"]: {
+                "views": int(r.get("views", 0)),
+                "engaged_views": int(r.get("engagedViews", 0)),
+                "watch_hours": round(float(r.get("estimatedMinutesWatched", 0)) / 60, 3)
+            } for r in rows}}
+    response = yta.reports().query(
+        ids="channel==MINE", startDate=(end - timedelta(days=27)).isoformat(),
+        endDate=end.isoformat(), metrics="subscribersGained,subscribersLost").execute()
+    columns = [c["name"] for c in response.get("columnHeaders", [])]
+    row = dict(zip(columns, (response.get("rows") or [[]])[0]))
+    result["subscribers_net_28d"] = int(row.get("subscribersGained", 0)) - int(row.get("subscribersLost", 0))
+    return result
 
 
 def _video_metrics(yta, video_id: str, start: str, end: str) -> dict | None:
@@ -430,7 +477,7 @@ def _video_metrics(yta, video_id: str, start: str, end: str) -> dict | None:
     vals = dict(zip((c["name"] for c in cols), rows[0]))
     return {
         "views": int(vals.get("views", 0)),
-        "estimated_minutes_watched": int(vals.get("estimatedMinutesWatched", 0)),
+        "estimated_minutes_watched": float(vals.get("estimatedMinutesWatched", 0)),
         "average_view_duration_seconds": round(float(vals.get("averageViewDuration", 0)), 1),
         "retention_percent_view": round(float(vals.get("averageViewPercentage", 0)), 2),
         "subscribers_gained": int(vals.get("subscribersGained", 0)),
@@ -463,10 +510,18 @@ def _watch_ratio_rows(yta, video_id: str, start: str, end: str) -> list[dict]:
 # ──────────────────────────────────────────────
 def _video_id_from(value: str) -> str:
     """Accept a bare id, a youtu.be URL, or a full watch URL."""
+    from urllib.parse import urlparse, parse_qs
     v = (value or "").strip()
-    if "youtu" in v:
-        return v.rstrip("/").split("/")[-1].split("?")[0]
-    return v
+    if "://" not in v:
+        return v
+    parsed = urlparse(v)
+    host = (parsed.hostname or "").lower()
+    if host in ("youtube.com", "www.youtube.com", "m.youtube.com"):
+        if parsed.path == "/watch":
+            return parse_qs(parsed.query).get("v", [""])[0]
+        parts = parsed.path.strip("/").split("/")
+        return parts[1] if len(parts) == 2 and parts[0] in ("shorts", "embed", "live") else ""
+    return parsed.path.strip("/") if host == "youtu.be" else ""
 
 
 def import_manual_ctr(ctr_map: dict[str, float], channel: str = "default",
@@ -483,11 +538,14 @@ def import_manual_ctr(ctr_map: dict[str, float], channel: str = "default",
         vid = _video_id_from(key)
         if not vid:
             continue
-        row = store["videos"].setdefault(vid, {"title": None, "views": 0})
         try:
-            row["ctr_percent"] = round(float(ctr), 2)
+            value = float(ctr)
         except (TypeError, ValueError):
             continue
+        if not math.isfinite(value) or not 0 <= value <= 100:
+            continue
+        row = store["videos"].setdefault(vid, {"title": None, "views": 0, "channel": channel})
+        row["ctr_percent"] = round(value, 2)
         row["ctr_source"] = "studio_manual"
         row["ctr_synced_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         updated += 1
@@ -500,7 +558,8 @@ def import_manual_ctr(ctr_map: dict[str, float], channel: str = "default",
         join_ctr_to_packaging(store, packaging)
         joined = sum(1 for e in packaging if e.get("ctr") is not None)
         state["packaging_log"] = packaging
-        channel_state._save(state, channel)
+        if write:
+            channel_state._save(state, channel)
     except Exception as e:
         log.warning(f"packaging CTR join failed during manual import: {e}")
 
@@ -515,7 +574,7 @@ def _yt_analytics_service(channel: str | None = None):
     from pipeline.uploader import _yt_service_with_scopes
     # Analytics uses its own build but the same OAuth creds; re-using the
     # uploader's authenticated service keeps the token file single-source.
-    youtube = _yt_service_with_scopes(channel=channel)
+    youtube = _yt_service_with_scopes(kind="analytics", channel=channel)
     from googleapiclient.discovery import build
     # The credentials object is embedded in the built service; rebuild cheaply.
     creds = youtube._http.credentials if getattr(youtube, "_http", None) else None

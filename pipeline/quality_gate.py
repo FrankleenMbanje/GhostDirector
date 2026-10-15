@@ -70,6 +70,25 @@ def _sentences(text: str) -> list[str]:
     return [s.strip() for s in re.split(r"[.!?]+", text) if s.strip()]
 
 
+def _hook_word_limit(is_short: bool) -> int:
+    return 12 if is_short else 15
+
+
+def _cap_for_hook_block(total: float, script, is_short: bool) -> float:
+    """Hard gate: a hook over its word limit can never reach SHIP (8.0).
+
+    The word limit used to be a -2.5 score deduction only, so a 29-word hook
+    still scored 8.2 and shipped. Capping the total at 7.9 turns it into FIX.
+    """
+    scenes = script.scenes
+    if not scenes:
+        return total
+    words = len((scenes[0].narration or "").strip().split())
+    if words > _hook_word_limit(is_short):
+        return min(total, 7.9)
+    return total
+
+
 def _score_hook(script, is_short: bool) -> tuple[float, list[str]]:
     issues: list[str] = []
     score = 10.0
@@ -80,7 +99,7 @@ def _score_hook(script, is_short: bool) -> tuple[float, list[str]]:
     words = len(hook.split())
 
     # Length discipline
-    limit = 12 if is_short else 15
+    limit = _hook_word_limit(is_short)
     if words > limit:
         score -= 2.5
         issues.append(f"Hook is {words} words (limit {limit}) — trim to a punch")
@@ -296,24 +315,85 @@ def _score_edit(project_dir: Path, script, is_short: bool) -> tuple[float, list[
     if not durations:
         return 4.0, ["No timed scenes — edit cadence unknown"]
 
-    # Visual-change cadence: the 2026 target is a change every 1.5-2s.
-    # Proxy: per-scene narration length; >4s scenes need punch-cuts (the
-    # assembler provides them via cut_sec — count them as covered).
-    long_scenes = [d for d in durations if d > 4.0]
-    total = sum(durations)
-    if total / len(durations) > (3.4 if is_short else 6.5):
-        score -= 2.0
-        issues.append("Average shot length too slow for Shorts pacing (target 1.5-2s visual change)")
+    # Measure the cuts the assembler actually wrote, not narration-beat
+    # duration. Each 8-12s narration scene can contain several visual cuts;
+    # using its audio length here systematically mislabeled edited sequences as
+    # slow. A single still-image clip may itself contain punch-ins, so its raw
+    # clip length is not evidence of an unchanging shot; score it from the
+    # scene cadence model unless explicit multi-cut segments are present.
+    timeline_path = Path(project_dir) / "timeline.json"
+    effective_durations: list[float] = []
+    measured_cuts = False
+    timeline_scene_numbers: set[int] = set()
+    try:
+        timeline = json.loads(timeline_path.read_text(encoding="utf-8"))
+        for scene in timeline.get("scenes", []):
+            try:
+                scene_number = int(scene.get("scene_number"))
+                timeline_scene_numbers.add(scene_number)
+            except (AttributeError, TypeError, ValueError):
+                scene_number = None
+            cuts = scene.get("cuts") or scene.get("video_cuts") or []
+            scene_cuts: list[float] = []
+            for cut in cuts:
+                try:
+                    value = float(cut.get("duration_seconds") or cut.get("duration") or 0)
+                except (AttributeError, TypeError, ValueError):
+                    continue
+                if value > 0:
+                    scene_cuts.append(value)
+            if scene_cuts:
+                # Keep cuts AND uncut scenes in the aggregate. Ignoring an
+                # uncut 9-second beat because another scene has a cut list
+                # makes a mixed edit look much faster than the viewer sees.
+                effective_durations.extend(scene_cuts)
+                measured_cuts = True
+            else:
+                try:
+                    scene_duration = float(scene.get("duration_seconds") or 0)
+                except (AttributeError, TypeError, ValueError):
+                    scene_duration = 0
+                if scene_duration > 0:
+                    effective_durations.append(scene_duration)
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
 
-    # Scene count sanity for a 40-60s short
+    # A partial or absent timeline must not silently drop script scenes.
+    if timeline_scene_numbers:
+        effective_durations.extend(
+            d for scene in scenes
+            if getattr(scene, "scene_number", None) not in timeline_scene_numbers
+            for d in [getattr(scene, "audio_duration_seconds", None)
+                      or getattr(scene, "duration_target_seconds", None) or 0]
+            if d > 0
+        )
+    if not effective_durations:
+        effective_durations = durations
+    long_scenes = [d for d in effective_durations if d > 4.0]
+    avg_shot_length = sum(effective_durations) / len(effective_durations)
+    pacing_limit = 3.4 if is_short else 6.5
+    if avg_shot_length > pacing_limit:
+        score -= 2.0
+        measurement = "edit cuts" if measured_cuts else "scene durations (no cut list)"
+        target = "1.5-2s" if is_short else "3-6s"
+        issues.append(f"Average shot length too slow (measured from {measurement}; "
+                      f"target {target} visual changes)")
+
+    # Scene count / visual-change sanity for a short.
     if is_short:
-        n = len(scenes)
+        n = len(effective_durations) if measured_cuts else len(scenes)
+        if not measured_cuts and len(effective_durations) == len(durations) \
+                and avg_shot_length > 3.4:
+            # Keep a specific fallback diagnosis for drafts with no measured
+            # edit manifest; the general pacing issue above is for mixed edits.
+            issues.append("Average scene duration too slow (no measured cut list; "
+                          "target 1.5-2s visual changes)")
         if n < 8:
             score -= 2.0
-            issues.append(f"Only {n} scenes for a short — target 10-16 fast cuts")
-        if len(long_scenes) > len(durations) * 0.4:
+            issues.append(f"Only {n} visual shots for a short — target 10-16 fast cuts")
+        if len(long_scenes) > len(effective_durations) * 0.4:
             score -= 1.5
-            issues.append("Too many >4s scenes — punch-cut the long ones (wide → tight → pan)")
+            issues.append("Too many >4s visual cuts — punch-cut or replace static frames")
 
     # SFX coverage
     with_sfx = sum(1 for s in scenes if (s.sfx_cue or "none") != "none")
@@ -382,6 +462,7 @@ def evaluate_script_only(script, is_short: bool = True) -> dict:
     story_s, story_i = _score_story(script, is_short)
     human_s, human_i = _score_humanity(script)
     total = (hook_s * 0.40 + story_s * 0.35 + human_s * 0.25)
+    total = _cap_for_hook_block(total, script, is_short)
     return {
         "score": round(total, 1),
         "verdict": "ship" if total >= 8.0 else ("fix" if total >= 6.0 else "redo"),
@@ -389,6 +470,31 @@ def evaluate_script_only(script, is_short: bool = True) -> dict:
                       "humanity": round(human_s, 1)},
         "issues": hook_i + story_i + human_i,
     }
+
+
+def longform_runtime_issue(actual_seconds: float, target_minutes: float) -> str | None:
+    """Return a blocking note when an 8+ minute deliverable misses its floor."""
+    try:
+        actual = float(actual_seconds)
+        target = float(target_minutes)
+    except (TypeError, ValueError):
+        return "Unable to verify long-form runtime"
+    if target >= 8.0 and actual < target * 60.0:
+        return (f"Long-form is {actual:.1f}s, below the {target:g}-minute "
+                f"({target * 60:.0f}s) deliverable floor")
+    return None
+
+
+def quality_gate_allows_delivery(result: dict) -> bool:
+    """Only an explicit SHIP (>=8/10) verdict may proceed to delivery.
+
+    Historically callers blocked only REDO, accidentally uploading FIX-rated
+    renders despite the quality gate's own stated 8/10 ship threshold.
+    """
+    try:
+        return result.get("verdict") == "ship" and float(result.get("score", 0)) >= 8.0
+    except (AttributeError, TypeError, ValueError):
+        return False
 
 
 def evaluate_project(project_dir: Path, script_path: Path | None = None,
@@ -432,6 +538,7 @@ def evaluate_project(project_dir: Path, script_path: Path | None = None,
     }
     total = (hook_s * 0.30 + story_s * 0.25 + human_s * 0.15
              + vis_s * 0.20 + edit_s * 0.10)
+    total = _cap_for_hook_block(total, script, is_short)
     issues = hook_i + story_i + human_i + vis_i + edit_i
 
     verdict = "ship" if total >= 8.0 else ("fix" if total >= 6.0 else "redo")

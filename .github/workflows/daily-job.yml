@@ -1,0 +1,326 @@
+name: GhostDirector daily job (reusable)
+# One job per video of the day's slate (role: stage), the day's roll-up
+# (role: finalize) or one ad-hoc short (role: adhoc). Every job gets its own
+# time budget. The no-repeat ledger, DB, experiments and channel memory, plus
+# the per-video results, travel from job to job in a handoff artifact.
+
+on:
+  workflow_call:
+    inputs:
+      role:
+        description: "stage | finalize | adhoc"
+        type: string
+        required: true
+      stage:
+        description: "1-based slate position for role=stage (0 otherwise)"
+        type: number
+        default: 0
+      previous_stage:
+        description: "stage whose handoff this job restores (0 = restore the cross-run cache)"
+        type: number
+        default: 0
+      mode:
+        description: "full | shorts_only | single_short"
+        type: string
+        default: full
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  run:
+    runs-on: ubuntu-24.04
+    # Each video job has its own budget (was one 350-minute cap for the whole slate).
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ffmpeg
+        run: sudo apt-get update -y && sudo apt-get install -y ffmpeg
+
+      # FIX-071: xfade assembly holds every input's decoder + frame buffers
+      # open; even bounded passes pushed the 7 GB runner into swap-less OOM
+      # (run #5: pass 2 died silently, runner SIGTERM'd mid-render). A 4 GB
+      # swapfile turns thrash into slow-but-steady rendering.
+      - name: Add swap (OOM guard)
+        run: |
+          sudo fallocate -l 4G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # FIX-101: whisper_timestamped loads its silero VAD through torch.hub,
+      # whose interactive trust prompt stalls on a non-interactive runner —
+      # every cloud scene then fell back to evenly-spaced fake word timings
+      # (captions, FIX-097 callouts and punch-cut points all starved).
+      # Pre-clone with trust_repo=True so the real VAD is available; the
+      # pipeline also retries without VAD if this ever fails.
+      - name: Pre-cache Whisper VAD (silero)
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          try:
+              import torch
+              torch.hub.load("snakers4/silero-vad", "silero_vad",
+                             trust_repo=True, verbose=False)
+              print("silero VAD cached for whisper_timestamped")
+          except Exception as e:
+              print(f"silero pre-cache failed (whisper will run without VAD): {e}")
+          PY
+
+      # The first job of the day restores the cross-run state (newest
+      # run-scoped cache). Later jobs take the handoff from the job before.
+      # Restore and save are split so only the last job of the day writes the
+      # cache: cache keys are immutable, so a second save would be lost.
+      - name: Restore production state from the previous run
+        if: ${{ inputs.previous_stage == 0 }}
+        uses: actions/cache/restore@v4
+        with:
+          path: output/state
+          # FIX-090: the old fixed key `gd-state-v1` was saved once (2026-09-30)
+          # and never updated — cache keys are immutable, so the no-repeat
+          # ledger and experiments state silently reset on every run (the
+          # same stories could repeat, arms were forgotten). Run-scoped keys
+          # + a prefix restore keep the newest state flowing forward.
+          key: gd-state-${{ github.run_id }}
+          restore-keys: |
+            gd-state-
+
+      - name: Take the handoff from the previous video job
+        # A failed download stops this job: it must not run on blank state.
+        if: ${{ inputs.previous_stage != 0 }}
+        uses: actions/download-artifact@v4
+        with:
+          name: handoff-${{ github.run_id }}-${{ inputs.previous_stage }}
+          path: handoff-in
+
+      - name: Unpack the handoff into output/
+        if: ${{ inputs.previous_stage != 0 }}
+        run: |
+          mkdir -p output/state
+          cp -r handoff-in/state/. output/state/
+          cp -r handoff-in/results/. output/
+          ls -la output output/state
+
+      - name: Restore state files into live paths
+        run: |
+          mkdir -p db output/state
+          cp -f output/state/trending_news.json db/ 2>/dev/null || true
+          cp -f output/state/experiments.json db/ 2>/dev/null || true
+          # FIX-091/092: the self-learning inputs (winner history, proven
+          # names) need the catalogue memory, not just the ledger.
+          cp -f output/state/channel_memory.json db/ 2>/dev/null || true
+          cp -f output/state/analytics.json output/state/channel_state*.json db/ 2>/dev/null || true
+          cp -f output/state/ghostdirector.db output/ 2>/dev/null || true
+
+      - name: Write secrets
+        # FIX-072: secrets must reach the shell as ENV VARS, never as direct
+        # ${{ }} interpolation inside double quotes — the JSON's own " chars
+        # terminate the shell quoting and get stripped, writing
+        # {installed: {...}} (invalid) — the exact JSONDecodeError that
+        # killed the upload step in runs #1–#6. Env values bypass shell
+        # parsing entirely; "$VAR" expansion preserves them.
+        env:
+          GD_ENV: ${{ secrets.GD_ENV }}
+          GD_CLIENT_SECRETS: ${{ secrets.GD_CLIENT_SECRETS }}
+          GD_YOUTUBE_TOKEN: ${{ secrets.GD_YOUTUBE_TOKEN }}
+        run: |
+          printf '%s' "$GD_ENV" > .env
+          printf '%s' "$GD_CLIENT_SECRETS" > client_secrets.json
+          printf '%s' "$GD_YOUTUBE_TOKEN" > youtube_token.famefiles.json
+          # Fail fast here (not 40 min in, at upload) if anything is mangled.
+          python - <<'PY'
+          import json, pathlib
+          for name in ("client_secrets.json", "youtube_token.famefiles.json"):
+              json.loads(pathlib.Path(name).read_text(encoding="utf-8"))
+              print(f"{name}: valid JSON")
+          env = pathlib.Path(".env").read_text(encoding="utf-8")
+          keys = [l.split("=", 1)[0] for l in env.splitlines() if l.strip() and not l.startswith("#")]
+          assert keys, ".env is empty"
+          print(f".env: {len(keys)} keys")
+          PY
+
+      - name: Token health check (warn-only)
+        # FIX-080: the Testing-mode OAuth app's refresh token dies ~7 days
+        # after minting (next expiry ~Oct 7). Catch it at setup with a clear
+        # warning instead of discovering it 40 min later at the upload step.
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          import json, urllib.parse, urllib.request
+          tok = json.load(open("youtube_token.famefiles.json", encoding="utf-8"))
+          data = urllib.parse.urlencode({
+              "client_id": tok["client_id"],
+              "client_secret": tok["client_secret"],
+              "refresh_token": tok["refresh_token"],
+              "grant_type": "refresh_token",
+          }).encode()
+          try:
+              r = json.load(urllib.request.urlopen(
+                  "https://oauth2.googleapis.com/token", data=data, timeout=20))
+              print("TOKEN OK - access token acquired, expires_in",
+                    r.get("expires_in"), "s")
+          except Exception as e:
+              print(f"::warning::YouTube refresh token failed ({e}) - today's "
+                    f"uploads will fail. Re-mint the token or publish the OAuth app.")
+          PY
+
+      - name: Read the shared workflow start for publish planning
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json, os, urllib.request
+          url = f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+          request = urllib.request.Request(url, headers={
+              "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+              "Accept": "application/vnd.github+json"})
+          with urllib.request.urlopen(request, timeout=30) as response:
+              started = json.load(response)["run_started_at"]
+          with open(os.environ["GITHUB_ENV"], "a") as output:
+              output.write(f"GD_PLAN_NOW={started}\n")
+          print(f"Shared publish-plan start: {started}")
+          PY
+
+      - name: Run the job's step (video / roll-up / ad-hoc)
+        env:
+          ROLE: ${{ inputs.role }}
+          STAGE: ${{ inputs.stage }}
+          GD_MODE: ${{ inputs.mode }}
+          GD_SHORTS_PER_DAY: "3"
+          GD_SHORTS_ONLY: ${{ inputs.mode == 'shorts_only' && '1' || '' }}
+          # Every video of the day plans its publish slot from the same run
+          # start, so the slate does not drift with each job's queue delay.
+        run: |
+          # FIX-080 (operator order 2026-10-02): every day 3 shorts + 1 doc,
+          # every upload PUBLIC. The final QC gate and the compliance gate
+          # stay the safety net; PUBLISH_QUEUE.md is the verify-and-pin list.
+          # A stage job runs one slate position; run_stage retries that video
+          # itself (GD_STAGE_ATTEMPTS). GD_ADHOC (FIX-082) lets an ad-hoc short
+          # bypass the publish-idempotency check so the extra actually gets made.
+          # FIX-099: pipefail + `$?` keep the real command status (not tee's).
+          mkdir -p output
+          case "$ROLE" in
+            stage)    CMD_LINE="python main.py --daily-stage $STAGE"; ATTEMPTS=1; LOG="output/_stage_$STAGE.log";;
+            finalize) CMD_LINE="python main.py --daily-finalize"; ATTEMPTS=1; LOG="output/_finalize.log";;
+            adhoc)    CMD_LINE="GD_ADHOC=1 python main.py --trending --channel famefiles --privacy public"; ATTEMPTS=3; LOG="output/_daily.log";;
+            *) echo "unknown role: $ROLE"; exit 2;;
+          esac
+          echo "Role: $ROLE -> $CMD_LINE"
+          set +e
+          set -o pipefail
+          for attempt in $(seq 1 "$ATTEMPTS"); do
+            echo "== $ROLE attempt $attempt at $(date -u +%H:%M) UTC =="
+            eval "$CMD_LINE 2>&1 | tee -a \"$LOG\""
+            code=$?
+            if [ "$code" -eq 0 ]; then exit 0; fi
+            echo "$ROLE attempt $attempt failed (exit $code)"
+            if [ "$attempt" -lt "$ATTEMPTS" ]; then
+              echo "cooling down 10 min"
+              sleep 600
+            fi
+          done
+          exit 1
+
+      - name: Snapshot state
+        if: always()
+        run: |
+          # The no-repeat ledger (db/trending_news.json) + SQLite DB
+          # (output/ghostdirector.db) decide story freshness and daily
+          # idempotency; keep both across jobs.
+          mkdir -p output/state
+          cp -f db/trending_news.json output/state/ 2>/dev/null || true
+          # FIX-086: the experiment registry must survive runs — it is the
+          # cloud's memory of which arm each video belongs to.
+          cp -f db/experiments.json output/state/ 2>/dev/null || true
+          # FIX-091/092: channel memory is the self-learning input too.
+          cp -f db/channel_memory.json output/state/ 2>/dev/null || true
+          cp -f db/analytics.json db/channel_state*.json output/state/ 2>/dev/null || true
+          cp -f output/ghostdirector.db output/state/ 2>/dev/null || true
+
+      - name: Pack the handoff for the next job
+        if: ${{ always() && inputs.role == 'stage' }}
+        run: |
+          rm -rf handoff && mkdir -p handoff/state handoff/results
+          cp -r output/state/. handoff/state/
+          cp output/_stage_*.txt output/_stage_*.log handoff/results/ 2>/dev/null || true
+          cp output/PUBLISH_QUEUE.md handoff/results/ 2>/dev/null || true
+          # Per-video metadata and QC reports from earlier jobs are needed in
+          # the final artifact, so they travel forward with the state.
+          (cd output && find . -mindepth 2 \( -name metadata.json -o -name final_qc_report.json -o -name timeline.json -o -name script.json \) \
+            -exec cp --parents {} ../handoff/results/ \;) || true
+          find handoff -type f | sort
+
+      - name: Hand off to the next job
+        if: ${{ always() && inputs.role == 'stage' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: handoff-${{ github.run_id }}-${{ inputs.stage }}
+          path: handoff/
+          retention-days: 2
+          if-no-files-found: error
+
+      - name: Save cross-run state
+        # Only the last job of the day writes the cross-run cache.
+        if: ${{ always() && inputs.role != 'stage' }}
+        uses: actions/cache/save@v4
+        with:
+          path: output/state
+          key: gd-state-${{ github.run_id }}
+
+      - name: Upload production artifacts
+        if: ${{ always() && inputs.role != 'stage' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}
+          path: |
+            output/_daily.log
+            output/_finalize.log
+            output/_stage_*.log
+            output/_stage_*.txt
+            output/_daily_result.txt
+            output/_daily_intel.txt
+            output/PUBLISH_QUEUE.md
+            db/channel_memory.json
+            db/analytics.json
+            output/**/metadata.json
+            output/**/timeline.json
+            output/**/script.json
+            output/**/final_qc_report.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Job summary
+        if: ${{ always() && inputs.role == 'finalize' }}
+        run: |
+          {
+            echo "## Daily production — $(date -u +%F)"
+            if [ -f output/_daily_result.txt ]; then
+              echo '```'
+              cat output/_daily_result.txt
+              echo '```'
+            fi
+            echo '```'
+            cat output/_stage_*.log 2>/dev/null | grep -aE "Uploaded to|Upload skipped|Error|FAILED|PARTIAL|COMPLETE|Quality gate" | tail -20 || true
+            echo '```'
+            if [ -f output/PUBLISH_QUEUE.md ]; then
+              echo "## 📢 Verify + pin (videos are PUBLIC — check playback, pin the bridge comment)"
+              cat output/PUBLISH_QUEUE.md
+            fi
+            if [ -f output/_daily_intel.txt ]; then
+              echo "## 🧠 Daily intel (learning + diagnosis)"
+              head -c 6000 output/_daily_intel.txt
+              echo
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

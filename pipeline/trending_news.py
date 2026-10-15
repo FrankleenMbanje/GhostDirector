@@ -512,7 +512,8 @@ def record_story(story: dict, status: str = "seen",
     _save_ledger(ledger)
 
 
-def find_companion_video_id(story_title: str, want_fmt: str) -> str | None:
+def find_companion_video_id(story_title: str, want_fmt: str,
+                            channel: str | None = None) -> str | None:
     """FIX-077: the already-shipped sibling video for this story
     (short↔doc bridge). Returns its YouTube video id or None."""
     key = _story_key(story_title or "")
@@ -520,7 +521,8 @@ def find_companion_video_id(story_title: str, want_fmt: str) -> str | None:
         return None
     for s in _load_ledger().get("stories", []):
         if (s.get("key") == key and s.get("video_id")
-                and s.get("fmt") == want_fmt):
+                and s.get("fmt") == want_fmt
+                and (channel is None or s.get("channel") == channel)):
             return s["video_id"]
     return None
 
@@ -529,32 +531,39 @@ _QUEUE_PATH = Path("output") / "PUBLISH_QUEUE.md"
 
 
 def append_publish_queue(story_title: str, fmt: str, video_id: str,
-                         packaged_title: str | None = None) -> None:
-    """FIX-078/FIX-080: the verify-and-pin list. Videos now upload PUBLIC
-    (operator order 2026-10-02), so the old "publish within 6h" race is
-    gone — what remains is the same-day pass: check playback, confirm the
-    packaging, and pin the bridge comment (the Data API cannot pin). Each
-    upload appends a row with a Studio link and a check-by deadline
-    (upload + 6h)."""
+                         packaged_title: str | None = None,
+                         publish_at: str | None = None) -> None:
+    """Append release timing plus the Studio review / pin reminder."""
     try:
         now = _now_utc()
         deadline = now + timedelta(hours=6)
         fmt_label = "8-min doc" if fmt == "longform" else "Short"
         pin_note = ("pin the bridge comment (link the Short)"
                     if fmt == "longform"
-                    else "pin the bridge comment once the doc is live (same day)")
-        row = (f"| {deadline.strftime('%b %d %H:%M UTC')} (+6h) "
-               f"| {fmt_label} | {(packaged_title or story_title or '')[:60]} "
+                    else "set the doc as Related video in Studio (clickable Shorts link); pin the bridge comment")
+        if publish_at:
+            try:
+                release_dt = datetime.fromisoformat(publish_at.replace("Z", "+00:00"))
+                verify_deadline = release_dt - timedelta(hours=1)
+                release_cell = (f"Scheduled {publish_at}; preflight by "
+                                f"{verify_deadline.astimezone(timezone.utc).strftime('%b %d %H:%M UTC')} (-1h); "
+                                f"verify by {(release_dt + timedelta(hours=6)).astimezone(timezone.utc).strftime('%b %d %H:%M UTC')} (+6h)")
+            except ValueError:
+                release_cell = f"Scheduled {publish_at}; preflight release"
+        else:
+            release_cell = f"PUBLIC now; verify by {deadline.strftime('%b %d %H:%M UTC')} (+6h)"
+        row = (f"| {release_cell} | {fmt_label} "
+               f"| {(packaged_title or story_title or '')[:60]} "
                f"| [Studio](https://studio.youtube.com/video/{video_id}/edit) "
                f"| [watch](https://youtu.be/{video_id}) | {pin_note} |\n")
         _QUEUE_PATH.parent.mkdir(exist_ok=True)
         if not _QUEUE_PATH.exists():
             _QUEUE_PATH.write_text(
-                "# PUBLISH QUEUE — verify & pin within 6h of upload\n\n"
-                "Videos upload PUBLIC automatically (operator order 2026-10-02). "
-                "Check playback + pin the bridge comment; pull anything broken "
-                "back to unlisted from Studio.\n\n"
-                "| publish-by | format | title | review | watch | pin |\n"
+                "# PUBLISH QUEUE — scheduled releases + verify and pin\n\n"
+                "Scheduled uploads stay PRIVATE until YouTube's publish slot; "
+                "unscheduled uploads remain PUBLIC immediately. Check playback "
+                "and pin the bridge comment; pull anything broken from Studio.\n\n"
+                "| publish / verify-by | format | title | review | watch | pin |\n"
                 "|---|---|---|---|---|---|\n",
                 encoding="utf-8")
         with open(_QUEUE_PATH, "a", encoding="utf-8") as f:

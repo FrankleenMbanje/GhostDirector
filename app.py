@@ -971,6 +971,7 @@ with tab_publish:
 # GROWTH — the learning loop (retention data → next edit)
 # ═════════════════════════════════════════════════════════════
 with tab_growth:
+    growth_channel = st.selectbox("Channel for growth reports", ["famefiles", "riseandruin", "default"])
     # Deferred success messages (survive the st.rerun() pattern)
     _pending_topic = st.session_state.pop("topic_loaded_msg", None)
     if _pending_topic:
@@ -993,6 +994,17 @@ with tab_growth:
         except Exception:
             _store = {}
     _videos = _store.get("videos", {}) if isinstance(_store, dict) else {}
+    _videos = {k: v for k, v in _videos.items() if v.get("channel", "default") == growth_channel}
+    growth = _store.get("channels", {}).get(growth_channel, {})
+    if growth:
+        a, b, c = st.columns(3)
+        a.metric("Subscribers", growth.get("subscribers"))
+        b.metric("Net subscribers (28 days)", growth.get("subscribers_net_28d"))
+        types = growth.get("window_365d", {}).get("content_types", {})
+        c.metric("Video watch hours (365d, Analytics)", types.get("videoOnDemand", {}).get("watch_hours", 0))
+        st.caption(f"Growth snapshot: {growth.get('synced_at')}. Analytics hours are not verified YPP hours. Check Studio > Earn for valid public hours and Shorts views.")
+    else:
+        st.info("No channel growth snapshot. Sync this channel with Analytics permission. Valid public watch hours are available in YouTube Studio > Earn.")
 
     # ── Sync controls ──
     g1, g2 = st.columns([1, 2])
@@ -1000,7 +1012,7 @@ with tab_growth:
         if st.button("Sync analytics now", use_container_width=True):
             try:
                 from pipeline.analytics import sync_channel
-                res = sync_channel()
+                res = sync_channel(channel=growth_channel)
                 st.success(f"{res['synced']} synced · {res['skipped']} skipped")
                 st.rerun()
             except FileNotFoundError as e:
@@ -1068,7 +1080,7 @@ with tab_growth:
     try:
         from pipeline.analytics import packaging_leaderboard
         from utils import channel_state
-        _state = channel_state._load("default")
+        _state = channel_state._load(growth_channel)
         _pb = packaging_leaderboard(_store, _state.get("packaging_log", []))
         if _pb["thumbnail_ctr"]:
             for thumb, info in _pb["thumbnail_ctr"].items():
@@ -1097,7 +1109,7 @@ with tab_growth:
         if st.button("Import CTR"):
             if _vid.strip():
                 from pipeline.analytics import import_manual_ctr
-                _res = import_manual_ctr({_vid.strip(): float(_ctr)})
+                _res = import_manual_ctr({_vid.strip(): float(_ctr)}, channel=growth_channel)
                 st.success(f"Imported — {_res['packaging_entries_with_ctr']} packaging "
                            "entries now carry CTR.")
             else:
@@ -1157,7 +1169,7 @@ with tab_growth:
         try:
             from pipeline.channel_audit import audit, render_audit_report
             with st.spinner("Auditing the channel…"):
-                _a = audit()
+                _a = audit(channel=growth_channel)
             st.code(render_audit_report(_a), language=None)
         except Exception as e:
             st.error(f"Audit failed: {e}")

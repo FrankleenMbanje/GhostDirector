@@ -1,0 +1,30 @@
+name: Production quality regression checks
+on:
+  pull_request:
+  push:
+    branches: ["codex/**"]
+permissions:
+  contents: read
+jobs:
+  offline-regressions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GEMINI_API_KEY: ""
+      ELEVENLABS_API_KEY: ""
+      PEXELS_API_KEY: ""
+      PIXABAY_API_KEY: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: sudo apt-get update -y && sudo apt-get install -y ffmpeg
+      - run: pip install -r requirements.txt
+      - name: Run offline production regression suites
+        run: |
+          python test_production_health.py
+          for phase in 1 2 3 4 5 6 7; do
+            python "test_phase${phase}_units.py"
+          done
