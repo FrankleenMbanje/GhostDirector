@@ -24,6 +24,7 @@ jobs:
       - name: Run offline production regression suites
         run: |
           python test_production_health.py
+          python test_licensed_media.py
           for phase in 1 2 3 4 5 6 7; do
             python "test_phase${phase}_units.py"
           done
