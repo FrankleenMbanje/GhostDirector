@@ -93,8 +93,15 @@ Coffeezilla), which are not Fame Files' celebrity-news peers. Competitor inputs
 need a separately verified niche watchlist before their outliers guide this
 channel. Studio access was verified after the owner signed into The Fame Files:
 74 subscribers, 10 qualified watch hours, and a rounded 22K qualified Shorts
-views (eligibility data as of October 10). The browser connection subsequently
-disconnected; existing Related video links have not yet been changed.
+views (eligibility data as of October 10). After Chrome reconnected, three
+previously empty Related video fields were saved and verified in Studio:
+
+- `bvSo-ScXp_I` → `K8NjMrNXoTw` (DJ Khaled / Drake)
+- `_p0TAUaGTA4` → `EHpkL35oQVA` (Taylor Swift's Billboard record)
+- `zVNBqHF24_w` → `HnVpo2eMFec` (Ohio home / neighbors)
+
+Local screenshots in `output/related-*-saved-2026-10-15.png` record these changes.
+Other Shorts' Related video fields have not been comprehensively audited.
 
 Sources: [YPP eligibility](https://support.google.com/youtube/answer/72851),
 [Related videos](https://support.google.com/youtube/answer/14075157),
