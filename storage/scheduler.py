@@ -214,8 +214,13 @@ def _run_intel(channel: str, env: dict) -> None:
         mem_path = Path("db") / "channel_memory.json"
         if mem_path.exists():
             memory = json.loads(mem_path.read_text(encoding="utf-8"))
+        from pipeline.analytics import load_store
+        growth = load_store().get("channels", {}).get(channel, {})
+        stats = dict((memory or {}).get("channel_stats") or {})
+        if growth.get("earn_snapshot"):
+            stats["earn_snapshot"] = growth["earn_snapshot"]
         parts.insert(0, "## DIAGNOSIS\n" + "\n".join(
-            diagnose(daily, memory, _queued_topics())))
+            diagnose(daily, memory, _queued_topics(), channel_stats=stats)))
         # FIX-089: report any automated upload that is no longer PUBLIC.
         # The post-upload guard only covers the upload window; this reads
         # the live status the catalogue refresh just captured (the 10-02

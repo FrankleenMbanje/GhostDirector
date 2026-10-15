@@ -14,7 +14,8 @@ Read from the Fame Files OAuth profile at 10:32 Africa/Johannesburg:
 | Shorts engaged views, 90 days | 23,717 |
 | Shorts watch hours, 365-day Analytics report | 228.017 |
 | Video-on-demand watch hours, 365 days | 12.967 |
-| Valid public watch hours / valid public Shorts views | Check Studio > Earn |
+| Studio Earn: qualified watch hours | 10 (as of October 10) |
+| Studio Earn: qualified Shorts views | 22K, rounded display (as of October 10) |
 
 Analytics has reporting lag and includes watch time that does not qualify for
 YPP. Neither lifetime views nor combined Shorts/documentary hours are eligibility
@@ -43,6 +44,8 @@ catalogue snapshot had 40 Shorts (median 1,065.5 views) and 16 documentaries
    voice beats before sourcing assets, preserving the hook and ending. Never
    cut speech mid-sentence. Narration caches now require a matching text/voice
    fingerprint and invalidate stale word timings when narration changes.
+   Linux CI additionally exposed MP3 container padding causing a missed silent
+   tail; trim against the decoded sample endpoint rather than container duration.
 5. Kinetic-card text and ASS hook text were burned together. Use a single hook
    headline layer. Evaluate actual picture shots rather than narration-scene
    count when scoring pacing. Keep the already-present local hook/runtime/QC
@@ -88,8 +91,10 @@ the data does not justify promising a monetization date.
 The cloud competitor report still showed business channels (MagnatesMedia and
 Coffeezilla), which are not Fame Files' celebrity-news peers. Competitor inputs
 need a separately verified niche watchlist before their outliers guide this
-channel. Browser Studio access initially belonged to a different channel;
-the owner is signing into The Fame Files for Earn totals and Related video work.
+channel. Studio access was verified after the owner signed into The Fame Files:
+74 subscribers, 10 qualified watch hours, and a rounded 22K qualified Shorts
+views (eligibility data as of October 10). The browser connection subsequently
+disconnected; existing Related video links have not yet been changed.
 
 Sources: [YPP eligibility](https://support.google.com/youtube/answer/72851),
 [Related videos](https://support.google.com/youtube/answer/14075157),

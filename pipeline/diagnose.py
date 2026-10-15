@@ -61,6 +61,11 @@ def monetization_gap(channel_stats: dict | None, rate_views_per_day: float,
     total_views = int(stats.get("total_views") or 0)
     valid_views = stats.get("valid_public_shorts_views")
     valid_hours = stats.get("valid_public_watch_hours")
+    earn = stats.get("earn_snapshot") or {}
+    if valid_hours is None:
+        valid_hours = earn.get("valid_public_watch_hours")
+    if valid_views is None:
+        valid_views = earn.get("valid_public_shorts_views")
     views_to_go = (max(SHORTS_VIEWS_TARGET - int(valid_views), 0)
                    if valid_views is not None else None)
     required_rate = SHORTS_VIEWS_TARGET / float(window_days)
@@ -76,6 +81,8 @@ def monetization_gap(channel_stats: dict | None, rate_views_per_day: float,
         "required_rate": round(required_rate, 1),
         "eta_days": eta_days,
         "watch_hours_to_go": max(4000 - float(valid_hours), 0) if valid_hours is not None else None,
+        "earn_as_of": earn.get("as_of"),
+        "shorts_views_display": earn.get("shorts_views_display"),
         "on_track": bool(subs >= SUBS_TARGET and
                          ((valid_views is not None and valid_views >= SHORTS_VIEWS_TARGET)
                           or (valid_hours is not None and valid_hours >= 4000))),
@@ -136,6 +143,9 @@ def diagnose(daily: dict, memory: dict | None = None,
             f"Recent-upload lifetime-view proxy: {gap['rate_views_per_day']:.0f}/day; "
             f"the Shorts route needs a sustained {gap['required_rate']:.0f}/day. "
             "No eligibility ETA can be inferred from lifetime views.")
+        if gap.get("earn_as_of"):
+            lines.append(f"EARN SNAPSHOT: {gap['earn_as_of']}; qualified Shorts views shown as "
+                         f"{gap.get('shorts_views_display') or 'unknown'}. Rounded display values are not exact view counts.")
         if not gap["on_track"]:
             lines.append(
                 "ACTION: pace is far below the 90-day bar. More uploads at the "

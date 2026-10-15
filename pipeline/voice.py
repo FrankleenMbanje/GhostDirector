@@ -275,7 +275,7 @@ def trim_clip_edges(audio_path: Path, keep_s: float = 0.20,
     try:
         p = subprocess.run(
             ["ffmpeg", "-v", "info", "-i", str(audio_path),
-             "-af", "silencedetect=noise=-40dB:d=0.05", "-f", "null", "-"],
+             "-af", "silencedetect=noise=-40dB:d=0.05,ashowinfo", "-f", "null", "-"],
             capture_output=True, text=True, timeout=30,
         )
         starts = [float(x) for x in
@@ -283,6 +283,12 @@ def trim_clip_edges(audio_path: Path, keep_s: float = 0.20,
         ends = [(float(a), float(b)) for a, b in re.findall(
             r"silence_end: (-?[0-9.]+) \| silence_duration: ([0-9.]+)",
             p.stderr or "")]
+        # MP3 container duration includes encoder delay/padding on Linux
+        # FFmpeg. Compare silence to the decoded sample end, otherwise a
+        # 3.80s silent tail is missed against a 3.84s container duration.
+        samples = re.findall(r"pts_time:([0-9.eE+-]+).*?rate:(\d+) nb_samples:(\d+)", p.stderr or "")
+        decoded_end = (float(samples[-1][0]) + int(samples[-1][2]) / int(samples[-1][1])
+                       if samples else dur)
         lead = 0.0
         trail = 0.0
         for i, s in enumerate(starts):
@@ -290,7 +296,7 @@ def trim_clip_edges(audio_path: Path, keep_s: float = 0.20,
             e = ends[i][0] if i < len(ends) else dur
             if s <= 0.02:
                 lead = max(lead, seg_len)
-            if e >= dur - 0.02:
+            if e >= decoded_end - 0.02:
                 trail = max(trail, seg_len)
     except Exception:
         return dur  # the trim must never break a stage

@@ -331,7 +331,11 @@ def sync_channel(channel: str = "default", days: int = LOOKBACK_DAYS,
     notes: list[str] = []
     synced = skipped = 0
     try:
-        store.setdefault("channels", {})[channel] = channel_growth_metrics(youtube, yta, end)
+        previous = store.setdefault("channels", {}).get(channel, {})
+        growth = channel_growth_metrics(youtube, yta, end)
+        if previous.get("earn_snapshot"):
+            growth["earn_snapshot"] = previous["earn_snapshot"]
+        store["channels"][channel] = growth
     except Exception as e:
         notes.append(f"Channel growth report unavailable ({e}); previous snapshot retained")
 

@@ -106,6 +106,14 @@ class ProductionHealthTests(unittest.TestCase):
         self.assertFalse(gap["on_track"])
         self.assertIsNone(gap["watch_hours_to_go"])
 
+    def test_dated_earn_snapshot_keeps_rounded_views_inexact(self):
+        gap = diagnose.monetization_gap({"subscribers": 74, "earn_snapshot": {
+            "as_of": "2026-10-10", "valid_public_watch_hours": 10,
+            "valid_public_shorts_views": None, "shorts_views_display": "22K"}}, 3000)
+        self.assertEqual(gap["watch_hours_to_go"], 3990)
+        self.assertEqual(gap["earn_as_of"], "2026-10-10")
+        self.assertIsNone(gap["views_to_go"])
+
     def test_growth_separates_content_and_dates(self):
         yt, yta = MagicMock(), MagicMock()
         yt.channels().list().execute.return_value = {"items": [
@@ -123,7 +131,8 @@ class ProductionHealthTests(unittest.TestCase):
         self.assertIsNone(result["valid_public_watch_hours"])
 
     def test_sync_preserves_manual_ctr_and_dry_run(self):
-        initial = {"videos": {"id": {"ctr_percent": 7.5, "ctr_source": "studio_manual"}}}
+        initial = {"videos": {"id": {"ctr_percent": 7.5, "ctr_source": "studio_manual"}},
+                   "channels": {"famefiles": {"earn_snapshot": {"as_of": "2026-10-10"}}}}
         with patch.object(analytics, "load_store", return_value=initial), \
              patch("pipeline.uploader._yt_service_with_scopes"), \
              patch.object(analytics, "_yt_analytics_service"), \
@@ -137,6 +146,7 @@ class ProductionHealthTests(unittest.TestCase):
              patch("utils.channel_state._save") as state_save:
             analytics.sync_channel("famefiles", write=False)
         self.assertEqual(initial["videos"]["id"]["ctr_percent"], 7.5)
+        self.assertEqual(initial["channels"]["famefiles"]["earn_snapshot"]["as_of"], "2026-10-10")
         save.assert_not_called()
         state_save.assert_not_called()
 

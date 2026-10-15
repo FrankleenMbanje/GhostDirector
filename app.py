@@ -1003,6 +1003,12 @@ with tab_growth:
         types = growth.get("window_365d", {}).get("content_types", {})
         c.metric("Video watch hours (365d, Analytics)", types.get("videoOnDemand", {}).get("watch_hours", 0))
         st.caption(f"Growth snapshot: {growth.get('synced_at')}. Analytics hours are not verified YPP hours. Check Studio > Earn for valid public hours and Shorts views.")
+        earn = growth.get("earn_snapshot", {})
+        if earn:
+            st.info(f"Studio Earn snapshot as of {earn.get('as_of')}: "
+                    f"{earn.get('valid_public_watch_hours')} qualified watch hours; "
+                    f"{earn.get('shorts_views_display')} qualified Shorts views. "
+                    "These dated counters may lag Analytics.")
     else:
         st.info("No channel growth snapshot. Sync this channel with Analytics permission. Valid public watch hours are available in YouTube Studio > Earn.")
 
