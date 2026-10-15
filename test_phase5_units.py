@@ -36,7 +36,27 @@ def test_thumbnail_styles():
     print("\n[A9a] thumbnail_styles library")
     from pipeline import thumbnail_styles as TS
 
-    check("13 curated styles", len(TS.STYLES) == 13)
+    check("14 curated styles", len(TS.STYLES) == 14)
+    check("clean-subject style is named and photo-led",
+          next((s for s in TS.STYLES if s["id"] == "clean-subject"), {}).get("text_layout") == "clean_subject")
+    from models import Scene, Script
+    from pipeline.thumbnail import _clean_subject_words
+    _diddy_script = Script(
+        title="The Terrifying Downfall of Hip-Hop's Biggest Mogul", description="",
+        tags=[], hook="", scenes=[Scene(
+            scene_number=1, narration="", visual_prompt="", visual_type="web_photo",
+            mood="dramatic", people_to_show=["Sean 'Diddy' Combs"])],
+        total_scenes=1, estimated_duration_minutes=8)
+    check("clean subject chooses the recognizable Diddy Combs name from people_to_show",
+          _clean_subject_words(_diddy_script) == ["DIDDY", "COMBS"])
+    _named_script = Script(
+        title="Why DJ Khaled Just Erased Drake From History", description="",
+        tags=[], hook="", scenes=[Scene(
+            scene_number=1, narration="", visual_prompt="", visual_type="web_photo",
+            mood="dramatic", people_to_show=["DJ Khaled", "Drake"])],
+        total_scenes=1, estimated_duration_minutes=8)
+    check("clean subject prioritizes DJ Khaled as primary subject, not the secondary Drake",
+          _clean_subject_words(_named_script) == ["DJ", "KHALED"])
     check("unique ids", len(TS.CURATED_IDS) == len(set(TS.CURATED_IDS)))
     check("all layouts known", all(s["text_layout"] in TS._KNOWN_LAYOUTS for s in TS.STYLES))
 
@@ -93,7 +113,16 @@ def test_thumbnail_renderer():
             hook_text="THE $9 BILLION LIE from $9 billion dollar company",
             niche="true crime", only_styles=[s["id"] for s in STYLES])
         by_id = {r["id"]: r for r in rows}
-        check("all 13 curated styles rendered", len(rows) == 13)
+        check("all 14 curated styles rendered", len(rows) == 14)
+        with Image.open(out / by_id["clean-subject"]["file"]) as clean:
+            check("clean-subject layout preserves the 16:9 photo canvas",
+                  clean.size == (W, H))
+        photo = Image.new("RGB", (W, H), (160, 160, 160))
+        photo_layout = T._layout_clean_subject(
+            photo.copy(), ["KIM", "KARDASHIAN"], 96, W, H, {"palette": {}})
+        clean_right = photo_layout.crop((W // 2, 0, W, H))
+        check("clean-subject keeps the photo unshaded away from its name",
+              clean_right.getpixel((20, 20)) == (160, 160, 160))
         for s in STYLES:
             f = out / by_id[s["id"]]["file"]
             check(f"file exists: {s['id']}", f.exists())

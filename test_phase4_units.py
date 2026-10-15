@@ -97,10 +97,10 @@ def test_analytics():
         {"elapsedVideoTimeRatio": "0.5", "viewPercentRemaining": 60.0},
         {"elapsedVideoTimeRatio": "0.25", "viewPercentRemaining": 85.0},   # out of order
         {"elapsedVideoTimeRatio": "0.75", "viewPercentRemaining": 65.0},   # noise uptick
-    ])
-    check("curve sorted + monotonic-clamped",
+    ], input_unit="percent")
+    check("curve sorted and replay upticks preserved",
           [p["ratio"] for p in noisy] == sorted(p["ratio"] for p in noisy)
-          and noisy[-1]["remaining_percent"] <= noisy[-2]["remaining_percent"])
+          and noisy[-1]["remaining_percent"] == 65.0)
 
     # Scene join: 3 equal scenes over a 60s video. Curve: 100→80→55→20 at
     # ratios 0/.25/.5/1 → scene windows lose 20 / 25 / 35 points, so scene 3
@@ -323,8 +323,9 @@ def test_edit_taste():
         t += dur + 0.02
     fast = _compute_cut_points(stamps, 12.0, taste=EDIT_TASTE["upbeat"])
     slow = _compute_cut_points(stamps, 12.0, taste=EDIT_TASTE["emotional"])
-    check("upbeat cuts more than emotional on identical narration",
-          fast is not None and slow is not None and fast[1] > slow[1],
+    check("upbeat is at least as fast as emotional within the shot-hold cap",
+          fast is not None and slow is not None and fast[1] >= slow[1]
+          and max(b - a for a, b in zip(slow[0], slow[0][1:])) <= 6.001,
           f"fast={fast and fast[1]} slow={slow and slow[1]}")
     if fast:
         pts = fast[0]

@@ -17,6 +17,7 @@ lane-guards rise-and-fall-shaped headlines.
 
 import asyncio
 import json
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,8 +47,7 @@ TEMPLATE_NAME = _CHANNEL_TEMPLATES[config.CHANNEL_FAMEFILES]
 
 # Long-form companion (operator schedule 2026-09-26): the daily cycle is a
 # short FIRST (discovery engine) then an 8-min+ documentary on the SAME
-# story. celebrity_8min carries the 8-min target + the exclusive-split
-# thumbnail pin.
+# story. celebrity_8min carries the 8-min target + clean-subject thumbnail.
 _CHANNEL_LONGFORM_TEMPLATES = {
     config.CHANNEL_FAMEFILES: "celebrity_8min",
     config.CHANNEL_RISEANDRUIN: "celebrity_8min",
@@ -150,8 +150,13 @@ def _override_metadata(meta: dict, script: Script, story: dict,
                 f"Story/script title mismatch — using the script's own title "
                 f"({script.title!r}) over the headline ({story['title']!r})")
             title = script.title.strip()
-    if len(title) > 95:
-        title = title[:92].rstrip(" .,!?:-") + "..."
+    # Trim at a word boundary, never mid-word, and never end with "..."
+    # (12 of 46 live titles were cut mid-word at 95 chars with an ellipsis).
+    # 70 keeps the full headline visible in Shorts feeds.
+    if len(title) > 70:
+        cut = title[:70]
+        head, sep, _ = cut.rpartition(" ")
+        title = (head if sep and head else cut).rstrip(" .,!?:;-\"'")
 
     hook = (script.hook or script.description or "").strip()
     follow_line, tag_line = _BRAND_LINES.get(
@@ -227,8 +232,18 @@ _WINNER_STOP = {
 
 
 def _winner_tokens(title: str) -> set[str]:
-    return {w for w in re.findall(r"[a-z']{4,}", (title or "").lower())
-            if w not in _WINNER_STOP}
+    """Distinctive lowercase words of a headline.
+
+    FIX-102: strip LEADING/TRAILING apostrophes. Feeds love quoting a phrase
+    ("says she has to 'hold back' North"), and the pattern used to keep the
+    quote as part of the word — "'hold" and "back'" matched nothing, so two
+    of the four shared tokens vanished and an IDENTICAL story scored below
+    the 3-token bar. With the doc gate that meant skipping a doc on a day
+    the feed plainly carried its breakout. Interior apostrophes (don't,
+    can't) are left alone.
+    """
+    return {w.strip("'") for w in re.findall(r"[a-z']{4,}", (title or "").lower())
+            if w.strip("'") and w.strip("'") not in _WINNER_STOP}
 
 
 def _winner_candidate(cands: list[dict], winner_title: str) -> dict | None:
@@ -271,6 +286,76 @@ def _recent_breakout(channel: str | None = None) -> dict | None:
         return None
 
 
+def fit_short_to_measured_voice(script: Script, max_seconds: float = 54.0) -> list[int]:
+    """Fit complete narrated beats before assets/rendering, retaining hook + ending.
+
+    gTTS fallback is slower than the estimated narrator rate. A word budget
+    alone allowed 60.7s/66s failures on CI. Do not cut audio mid-sentence or
+    renumber retained scenes: their cached audio and timestamps use those IDs.
+    """
+    def duration():
+        return sum(float(s.audio_duration_seconds or 0) for s in script.scenes)
+    dropped = []
+    while duration() > max_seconds and len(script.scenes) > 2:
+        dropped.append(script.scenes[-2].scene_number)
+        del script.scenes[-2]
+    if duration() > max_seconds:
+        raise ValueError("Short hook and ending exceed the measured voice budget; shorten narration before rendering")
+    script.total_scenes = len(script.scenes)
+    script.estimated_duration_minutes = duration() / 60
+    return dropped
+
+
+# FIX-102: the doc gate's cross-process signal. The scheduler owns the day's
+# result file ("doc=ok|failed|skipped"), so the child that gates the doc off
+# leaves this marker for the parent to read — a skip must never be reported
+# as a failure (that would read as a broken pipeline every day).
+DOC_GATE_MARKER = Path(os.environ.get("GD_DOC_GATE_MARKER") or
+                       "output/_doc_gated.txt")
+
+
+def _doc_gate_enabled() -> bool:
+    """FIX-102: is the long-form allowed to ship only on a breakout ride?"""
+    return os.environ.get("GD_DOC_GATE", "1") not in ("0", "false", "no")
+
+
+def _doc_gate_decision(winner: dict | None, has_match: bool,
+                       gate_on: bool, riding_on: bool = True) -> str:
+    """FIX-102: what today's long-form stage should do.
+
+    "ride"     — a breakout short earned reach AND today's feed still carries
+                 its story, so the doc inherits an audience that already chose
+                 the topic.
+    "gate"     — skip the doc: nothing broke out, or the breakout's story has
+                 left the feed. Producing a leftover story is how the doc
+                 slate got its 1-60 view band; a skip costs nothing.
+    "leftover" — legacy auto-pick (GD_DOC_GATE=0): any fresh story will do.
+    """
+    if not gate_on:
+        return "ride" if riding_on and has_match else "leftover"
+    if has_match:
+        return "ride"
+    return "gate"
+
+
+def _doc_gate_reason(winner: dict | None) -> str:
+    """Plain-language cause for a gated doc (goes in the log + the marker)."""
+    if winner is None:
+        return ("no short cleared the breakout bar (>=800 views and "
+                ">=1.2x the short median)")
+    return (f"the breakout has no matching story in today's feed "
+            f"({winner.get('title')} — {winner.get('views')} views)")
+
+
+def _write_doc_gate_skip(reason: str) -> None:
+    """Record that the long-form was deliberately skipped (best effort)."""
+    try:
+        DOC_GATE_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        DOC_GATE_MARKER.write_text(reason or "gated", encoding="utf-8")
+    except OSError as e:
+        log.warning(f"Doc gate marker write failed ({e})")
+
+
 # ──────────────────────────────────────────────
 # Production
 # ──────────────────────────────────────────────
@@ -305,6 +390,9 @@ async def run_trending_short(
         date_str=_today_harare(),
     )
     import os as _os
+    global DOC_GATE_MARKER
+    DOC_GATE_MARKER = Path(_os.environ.get("GD_DOC_GATE_MARKER") or
+                           "output/_doc_gated.txt")
     within_daily = bool(_os.environ.get("GD_WITHIN_DAILY"))
     # FIX-082: ad-hoc extras (workflow mode single_short) run OUTSIDE the
     # daily gate. Without this flag the gate's publish idempotency — which is
@@ -387,16 +475,35 @@ async def run_trending_short(
         # normal auto-pick below. Riding intentionally bypasses the
         # no-repeat check: the short already told the compressed story, the
         # doc is its companion, and the bridge comment links the pair.
-        if longform and _os.environ.get("GD_RIDE_WINNER", "1") not in ("0", "false", "no"):
-            winner = _recent_breakout(channel)
-            if winner:
-                wc = _winner_candidate(cands, winner.get("title") or "")
-                if wc is not None:
-                    story = wc
-                    say(f"[green]🔁 Long-form rides the breakout short "
-                        f"({winner.get('views')} views):[/green] {winner.get('title')}")
-                    log.info(f"FIX-091: riding breakout '{winner.get('title')}' "
-                             f"({winner.get('views')} views)")
+        if longform:
+            riding_on = (_os.environ.get("GD_RIDE_WINNER", "1")
+                         not in ("0", "false", "no"))
+            winner = _recent_breakout(channel) if riding_on else None
+            wc = (_winner_candidate(cands, winner.get("title") or "")
+                  if winner else None)
+            # FIX-102: HARD doc gate. Riding is the only way a long-form may
+            # ship. Leftover-story docs are dead weight: 8 docs, median 20
+            # views, zero engagement — the ONE that cracked 60 shared its
+            # story with a 1,379-view short, while the 1-view doc rode an
+            # off-lane story no short had touched. Skipping is free; a
+            # leftover doc burns ElevenLabs voice, cloud minutes and a slot
+            # in PUBLISH_QUEUE for single-digit views.
+            decision = _doc_gate_decision(
+                winner, wc is not None, _doc_gate_enabled(), riding_on=riding_on)
+            if decision == "ride":
+                story = {**wc, "companion_video_id": winner.get("id")}
+                say(f"[green]🔁 Long-form rides the breakout short "
+                    f"({winner.get('views')} views):[/green] {winner.get('title')}")
+                log.info(f"FIX-091: riding breakout '{winner.get('title')}' "
+                         f"({winner.get('views')} views)")
+            elif decision == "gate":
+                why = _doc_gate_reason(winner)
+                say(f"[yellow]⏭ Doc gate: skipping today's long-form — {why}. "
+                    f"Set GD_DOC_GATE=0 to allow a leftover story.[/yellow]")
+                log.warning(f"FIX-102: long-form gated off — {why}")
+                _write_doc_gate_skip(why)
+                return {"ok": True, "skipped": True,
+                        "reason": "doc_gate_no_breakout"}
 
         # No-repeat rule: take the first candidate whose story was NEVER
         # produced before (ledger + DB). Only when every candidate is a
@@ -516,7 +623,7 @@ async def run_trending_short(
                 + "\n- ".join(gate["issues"]) + "\n\nSCENES:\n"
                 + json.dumps(
                     [{"scene_number": s.scene_number, "narration": s.narration,
-                      "visual_prompt": s.visual_prompt, "mood": s.mood,
+                        "visual_prompt": s.visual_prompt, "mood": s.mood,
                       "sfx_cue": s.sfx_cue, "broll_keywords": s.broll_keywords}
                      for s in script.scenes], indent=1, ensure_ascii=False))
             try:
@@ -542,10 +649,27 @@ async def run_trending_short(
                     say(f"[dim]Quality gate (rewrite): {gate2['score']}/10[/dim]")
                     if gate2["score"] > gate["score"]:
                         gate = gate2
+                    else:
+                        # The candidate was applied in-place before scoring.
+                        # Rejecting only the score but leaving its narration
+                        # behind silently shipped the worse rewrite anyway.
+                        for s in script.scenes:
+                            s.narration = _orig_narrations[s.scene_number]
+                        script.save(script_path)
+                        say("[yellow]Rewrite did not improve the retention score — keeping the original script.[/yellow]")
             except Exception as e:
+                # A malformed/incomplete model response may have already
+                # touched the in-memory script. Restore the best known-good
+                # draft before voice/timestamps and scene caches are generated.
+                if "_orig_narrations" in locals():
+                    for s in script.scenes:
+                        if s.scene_number in _orig_narrations:
+                            s.narration = _orig_narrations[s.scene_number]
+                    script.save(script_path)
                 log.warning(f"quality-gate rewrite pass failed: {e}")
 
     # FIX-060: hard Shorts length enforcement — runs on FRESH and RESUMED
+
     # scripts alike (the rewrite loop cannot force a short enough draft, and
     # a resumed over-budget script.json must not render past 60s either).
     # Found live: a 206-word draft rendered 79.2s and compliance blocked it.
@@ -561,6 +685,11 @@ async def run_trending_short(
     from pipeline.voice import generate_voices
     from pipeline.timestamps import generate_timestamps
     script = await generate_voices(script, template, project_dir)
+    if not longform:
+        removed = fit_short_to_measured_voice(script)
+        if removed:
+            say(f"[yellow]Measured voice budget: removed complete context scenes {removed}; kept the hook and ending.[/yellow]")
+        script.save(script_path)
     script = generate_timestamps(script, project_dir)
     script.save(script_path)
     total = sum(s.audio_duration_seconds or s.duration_target_seconds or 5.0
@@ -620,13 +749,27 @@ async def run_trending_short(
     )
     recorder.stage("QC")
     recorder.qc(project_dir)
+    if not shippable:
+        recorder.fail("final QC failed: " + "; ".join(qc_issues)[:300])
     if shippable:
+        if longform:
+            from pipeline.quality_gate import longform_runtime_issue
+            runtime_issue = longform_runtime_issue(
+                get_duration(Path(final_video)),
+                template.get("script", {}).get("target_duration_minutes", 8))
+            if runtime_issue:
+                recorder.fail(runtime_issue)
+                say(f"[bold red]✗ Final runtime gate failed:[/bold red] {runtime_issue}")
+                record_story(story, status="skipped", channel=channel)
+                return {"ok": False, "reason": "longform_runtime_below_target",
+                        "issues": [runtime_issue], "project_dir": str(project_dir)}
         say(f"[green]OK[/green] Final QC pass{': ' + '; '.join(qc_issues) if qc_issues else ''}\n")
         # FIX-085: real-footage hook — the subject actually speaking, with the
         # clip's OWN audio, ~3 seconds in front of the short (operator's edit-
         # language ask). Normalized + spliced as a stream copy; any failure
         # ships the un-hooked render instead. Shorts only; vertical only.
         if _is_vertical and hook_mode == "on":
+            _base_short = Path(final_video)
             try:
                 hq = hook_query_for((story or {}).get("title") or script.title or "")
                 if hq:
@@ -647,6 +790,30 @@ async def run_trending_short(
             except Exception as e:
                 log.warning(f"Hook step failed (non-fatal): {e}")
                 hook_prov = None
+            # The hook is spliced AFTER the base render's QC. Validate the
+            # delivered file too: a malformed concat must never bypass the
+            # resolution/audio/duration gate. If the auxiliary concat fails QC,
+            # discard it and retain the already-passed base Short.
+            if hook_prov and Path(final_video) != _base_short:
+                from pipeline.visual_director import qc_gate as _hook_qc_gate
+                _hooked_path = _base_short.with_name(f"{_base_short.stem}_hooked{_base_short.suffix}")
+                if _hooked_path.exists():
+                    final_video = _hooked_path
+                try:
+                    final_video, hook_ok, hook_issues = _hook_qc_gate(
+                        Path(final_video), expected_size=(1080, 1920),
+                        report_dir=project_dir, project_dir=project_dir)
+                except Exception as qc_err:
+                    hook_ok, hook_issues = False, [f"QC crashed: {qc_err}"]
+                if not hook_ok:
+                    # The auxiliary interview splice is optional. Fall back
+                    # to the already-QC-passed assembled short, never ship an
+                    # unchecked concat and never fail a sound base render.
+                    log.warning(f"Hooked output failed QC ({hook_issues}); "
+                                "falling back to the checked base Short")
+                    Path(final_video).unlink(missing_ok=True)
+                    final_video = _base_short
+                    hook_prov = None
         elif _is_vertical:
             say("[dim]Hook experiment: this video is in the no-hook arm[/dim]")
     else:
@@ -660,7 +827,8 @@ async def run_trending_short(
     say("[bold blue]Step 6/6 — Thumbnail, metadata, compliance[/bold blue]")
     from pipeline.thumbnail import generate_thumbnail
     # generate_thumbnail promotes template.thumbnail.preferred_styles[0]
-    # (the EXCLUSIVE news-split) to thumbnail.png automatically.
+    # (clean-subject for long-form, an editorial style for shorts) to the
+    # shipped thumbnail.png automatically.
     thumb_path = generate_thumbnail(script, template, project_dir)
 
     from pipeline.metadata import generate_metadata
@@ -683,12 +851,14 @@ async def run_trending_short(
     from pipeline.quality_gate import evaluate_project
     gate = evaluate_project(project_dir, script_path=script_path,
                             is_short=not longform)
+
     say(f"Quality gate: [bold]{gate['score']}/10 {gate['verdict'].upper()}[/bold] "
         f"{gate['breakdown']}\n")
-    if gate["verdict"] == "redo":
+    from pipeline.quality_gate import quality_gate_allows_delivery
+    if not quality_gate_allows_delivery(gate):
         record_story(story, status="skipped", channel=channel)
-        return {"ok": False, "reason": "quality_gate_redo",
-                "score": gate["score"], "issues": gate["issues"][:6],
+        return {"ok": False, "reason": "quality_gate_below_ship_threshold",
+                "score": gate.get("score"), "issues": gate.get("issues", [])[:6],
                 "project_dir": str(project_dir)}
 
     if verdict == "fail" and upload:
@@ -715,6 +885,7 @@ async def run_trending_short(
             thumbnail_path=thumb_path,
             privacy_status=privacy,
             channel=channel,
+            publish_at=_os.environ.get("GD_PUBLISH_AT"),
         )
         # FIX-081: verify the bytes actually landed. The FIX-054 idempotency
         # guard can hand back an existing id, and a same-title short once let
@@ -732,7 +903,9 @@ async def run_trending_short(
             raise
         except Exception as e:
             log.warning(f"Upload verification skipped ({e})")
-        recorder.upload(video_id, f"https://youtu.be/{video_id}", privacy)
+        _publish_at = _os.environ.get("GD_PUBLISH_AT")
+        actual_visibility = "private" if _publish_at else privacy
+        recorder.upload(video_id, f"https://youtu.be/{video_id}", actual_visibility)
         # FIX-086: attach the shipped video to its experimental arm.
         try:
             from pipeline import experiments as _EX
@@ -754,9 +927,15 @@ async def run_trending_short(
             from pipeline.trending_news import find_companion_video_id
             from pipeline.uploader import post_companion_bridge
             want = "short" if longform else "longform"
-            companion = find_companion_video_id(story.get("title") or "", want)
+            companion = (story.get("companion_video_id") if longform else None)
+            companion = companion or find_companion_video_id(
+                story.get("title") or "", want, channel=channel)
             if companion:
-                post_companion_bridge(video_id, companion, companion_is_doc=(want == "longform"))
+                post_companion_bridge(video_id, companion, companion_is_doc=(want == "longform"), channel=channel)
+                post_companion_bridge(companion, video_id, companion_is_doc=longform, channel=channel)
+                short_id, doc_id = (companion, video_id) if longform else (video_id, companion)
+                with (config.OUTPUT_DIR / "PUBLISH_QUEUE.md").open("a", encoding="utf-8") as queue:
+                    queue.write(f"\n- Funnel: set [Short {short_id}](https://studio.youtube.com/video/{short_id}/edit) Related video to https://youtu.be/{doc_id}. Comment URLs in Shorts are not clickable.\n")
             else:
                 log.info("No companion video yet for this story — bridge skipped")
         except Exception as e:
@@ -775,14 +954,15 @@ async def run_trending_short(
         channel=channel,
     )
 
-    # FIX-078: publish fast-path — every shipped video lands in the queue
-    # with a Studio link and a +6h publish-by deadline.
+    # FIX-078: publish fast-path — record both the scheduled public release
+    # and the same-day Studio review deadline.
     if video_id:
         try:
             from pipeline.trending_news import append_publish_queue
             append_publish_queue(story.get("title") or topic,
                                  "longform" if longform else "short",
-                                 video_id, packaged_title=meta["title"])
+                                 video_id, packaged_title=meta["title"],
+                                 publish_at=_os.environ.get("GD_PUBLISH_AT"))
         except Exception as e:
             log.warning(f"Publish queue update failed (non-fatal): {e}")
 

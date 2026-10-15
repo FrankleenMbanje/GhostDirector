@@ -70,16 +70,31 @@ async def run_offline_test():
         export_resolve_bundle(script, template, output_dir)
     except Exception as e:
         print(f"Resolve export failed: {e}")
-    try:
-        from pipeline.metadata import generate_metadata
-        from pipeline.compliance import check_compliance
-        generate_metadata(script, template, output_dir)
-        report = check_compliance(script, {}, output_dir)
-        print(f"Compliance verdict: {report['verdict'].upper()}")
-    except Exception as e:
-        print(f"Compliance check failed: {e}")
+
+    # Build the same package the production pipeline checks: a real thumbnail
+    # and the generated metadata, rather than an empty dict that guaranteed a
+    # false metadata.title failure. Keep the manual synthetic-media disclosure
+    # as a warning; this offline fixture cannot set that YouTube Studio field.
+    from pipeline.thumbnail import generate_thumbnail
+    from pipeline.metadata import generate_metadata
+    from pipeline.compliance import check_compliance
+
+    thumbnail_path = generate_thumbnail(script, template, output_dir)
+    metadata = generate_metadata(script, template, output_dir)
+    report = check_compliance(script, metadata, output_dir)
+    if not thumbnail_path.is_file():
+        raise RuntimeError(f"Thumbnail was not generated: {thumbnail_path}")
+    failures = [f for f in report["findings"] if f["severity"] == "fail"]
+    if failures:
+        details = "; ".join(f"{f['check']}: {f['message']}" for f in failures)
+        raise RuntimeError(f"Offline output failed compliance: {details}")
+    print(f"Compliance verdict: {report['verdict'].upper()}")
+    if report["verdict"] == "warn":
+        warnings = [f for f in report["findings"] if f["severity"] == "warn"]
+        print("Manual/review warnings: " + "; ".join(f["check"] for f in warnings))
 
     print(f"\nSUCCESS! Test video generated at: {final_video}")
+    print(f"Thumbnail generated at: {thumbnail_path}")
 
 if __name__ == "__main__":
     asyncio.run(run_offline_test())

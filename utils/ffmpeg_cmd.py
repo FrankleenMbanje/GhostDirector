@@ -447,6 +447,10 @@ def cut_video_segment(
         "-map", "[vout]",
         "-an",
         "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+        # Photo cuts are 30fps with a 1/15360 track timebase. Concat's
+        # demuxer interprets every packet using the first input's timebase;
+        # mixing native 23.976/25fps cuts silently shifts/drops pictures.
+        "-r", "30", "-video_track_timescale", "15360",
         "-pix_fmt", "yuv420p",
         str(output_path),
     ]

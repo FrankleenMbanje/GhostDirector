@@ -80,14 +80,15 @@
     "transition_sfx": "swoosh"
   },
   "thumbnail": {
-    "style": "face_plus_text",
-    "text_position": "right",
+    "style": "clean_subject",
+    "text_position": "left",
     "font_size": 96,
-    "background_blur": 15,
-    "color_overlay": "#FF0000",
-    "color_overlay_opacity": 0.25,"preferred_styles": [
-  "exclusive-split"
- ]
+    "background_blur": 0,
+    "color_overlay": "#000000",
+    "color_overlay_opacity": 0.0,
+    "preferred_styles": [
+      "clean-subject"
+    ]
   },
   "shorts": {
     "enabled": true,

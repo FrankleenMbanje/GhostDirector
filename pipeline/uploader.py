@@ -1,5 +1,6 @@
 import os
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -43,6 +44,37 @@ MACLEOD_ATTRIBUTION = (
 )
 
 
+def _existing_upload_matches_schedule(status: dict, privacy_status: str,
+                                      scheduled_at: str | None) -> bool:
+    """Whether a same-title upload already has the requested visibility/release."""
+    existing_publish_at = status.get("publishAt")
+    if scheduled_at:
+        return (existing_publish_at == scheduled_at
+                and status.get("privacyStatus") in ("private", "public"))
+    return (not existing_publish_at
+            and status.get("privacyStatus") == privacy_status)
+
+
+def _scheduled_upload_status(privacy_status: str,
+                             publish_at: str | None) -> tuple[str, str | None]:
+    """Validate a scheduled release and return its effective privacy and time."""
+    raw_publish_at = (publish_at if publish_at is not None
+                      else os.environ.get("GD_PUBLISH_AT"))
+    scheduled_at = (raw_publish_at or "").strip()
+    if not scheduled_at:
+        return privacy_status, None
+    try:
+        publish_dt = datetime.fromisoformat(scheduled_at.replace("Z", "+00:00"))
+    except ValueError as e:
+        raise ValueError(
+            f"publish_at must be an ISO-8601 timestamp: {scheduled_at!r}") from e
+    if publish_dt.tzinfo is None or publish_dt.utcoffset() is None:
+        raise ValueError("publish_at must include a timezone, preferably UTC (Z)")
+    if publish_dt.astimezone(timezone.utc) <= datetime.now(timezone.utc):
+        raise ValueError("publish_at must be in the future")
+    return "private", scheduled_at
+
+
 def _yt_service_with_scopes(kind: str = "upload", channel: str | None = None):
     """Authenticate and return the YouTube Data API service.
 
@@ -77,13 +109,19 @@ def _yt_service_with_scopes(kind: str = "upload", channel: str | None = None):
     # Load existing credentials if available
     if token_path.exists():
         try:
-            creds = Credentials.from_authorized_user_file(str(token_path), required)
+            # Passing `required` here overwrites the file's granted scopes
+            # and makes an upload-only token appear Analytics-authorized.
+            creds = Credentials.from_authorized_user_file(str(token_path))
         except Exception as e:
             logger.warning(f"Failed to load existing YouTube token: {e}")
 
-        if creds and creds.valid and kind == "analytics":
+        if creds and kind == "analytics":
             have = set(creds.scopes or [])
-            if not set(required).issubset(have):
+            # Full youtube access also authorizes non-monetary Analytics
+            # (verified against this channel's live reports). Preserve that
+            # existing consent rather than demanding an unnecessary flow.
+            if (not set(required).issubset(have)
+                    and "https://www.googleapis.com/auth/youtube" not in have):
                 logger.info("Stored token lacks yt-analytics.readonly — one-time re-consent needed.")
                 creds = None
 
@@ -97,6 +135,11 @@ def _yt_service_with_scopes(kind: str = "upload", channel: str | None = None):
                 logger.warning(f"Token refresh failed ({e}); re-running OAuth flow.")
                 creds = None
         if not creds:
+            if os.environ.get("GITHUB_ACTIONS") == "true":
+                raise RuntimeError(
+                    "YouTube OAuth consent is required; reauthorize locally "
+                    "with the requested scopes and update GD_YOUTUBE_TOKEN. "
+                    "Interactive consent cannot run on GitHub Actions.")
             if not config.YOUTUBE_CLIENT_SECRETS_FILE.exists():
                 raise FileNotFoundError(
                     f"Missing {config.YOUTUBE_CLIENT_SECRETS_FILE}! "
@@ -151,7 +194,7 @@ def _companion_comment_text(companion_url: str, companion_is_doc: bool) -> str:
 
 
 def post_companion_bridge(uploaded_video_id: str, companion_video_id: str,
-                          companion_is_doc: bool) -> bool:
+                          companion_is_doc: bool, channel: str | None = None) -> bool:
     """FIX-077: cross-link a shipped video to its story sibling.
 
     The 28-day analytics showed the bridge is the whole funnel: the Khaled
@@ -161,7 +204,7 @@ def post_companion_bridge(uploaded_video_id: str, companion_video_id: str,
     time (checklist item 'pin_bridge_comment').
     """
     try:
-        youtube = get_authenticated_service()
+        youtube = get_authenticated_service(channel=channel)
         text = _companion_comment_text(
             f"https://youtu.be/{companion_video_id}", companion_is_doc)
         ok = post_pinned_comment(youtube, uploaded_video_id, text)
@@ -175,17 +218,16 @@ def post_companion_bridge(uploaded_video_id: str, companion_video_id: str,
 
 
 def _reassert_after_processing(youtube, video_id: str, privacy_status: str,
-                               max_wait_s: int = 900) -> None:
+                               max_wait_s: int = 900,
+                               publish_at: str | None = None) -> None:
     """Post-upload guard (2026-09-26): poll until YouTube finishes transcoding,
     then re-assert the requested privacy. Why both halves exist:
     (1) a completed upload sat in `processing` for 33h (transcode wedged —
     a fresh re-upload of the same bytes processed in 60s); the duration
     stayed P0D and the operator could not review the video;
     (2) after the stuck sibling was deleted, the fresh copy briefly showed
-    `public` although it was uploaded `unlisted`. The operator's standing
-    order (2026-10-02) is PUBLIC delivery — so privacy is verified and
-    re-asserted on every poll, never trusted once (drift in either
-    direction is corrected)."""
+    `public` although it was uploaded `unlisted`. Privacy is verified and
+    re-asserted on every poll, including scheduled private uploads."""
     import time as _time
     deadline = _time.time() + max_wait_s
     while _time.time() < deadline:
@@ -197,15 +239,21 @@ def _reassert_after_processing(youtube, video_id: str, privacy_status: str,
                 st = items[0].get("status", {})
                 proc = (items[0].get("processingDetails", {}) or {}).get("processingStatus")
                 cur = st.get("privacyStatus")
-                if cur and cur != privacy_status:
-                    youtube.videos().update(part="status", body={
-                        "id": video_id,
-                        "status": {"privacyStatus": privacy_status,
+                privacy_drift = cur and cur != privacy_status
+                schedule_drift = (publish_at is not None
+                                  and st.get("publishAt") != publish_at)
+                if privacy_drift or schedule_drift:
+                    status_body = {"privacyStatus": privacy_status,
                                    "selfDeclaredMadeForKids": False,
-                                   "containsSyntheticMedia": True}}).execute()
+                                   "containsSyntheticMedia": True}
+                    if publish_at is not None:
+                        status_body["publishAt"] = publish_at
+                    youtube.videos().update(part="status", body={
+                        "id": video_id, "status": status_body}).execute()
                     logger.warning(
-                        f"Privacy drifted to '{cur}' post-upload — "
-                        f"re-asserted '{privacy_status}'.")
+                        f"Post-upload status drift (privacy={cur!r}, "
+                        f"publishAt={st.get('publishAt')!r}) — reasserted "
+                        f"privacy={privacy_status!r}, publishAt={publish_at!r}.")
                 if proc in ("succeeded", "terminated") or st.get("uploadStatus") == "processed":
                     logger.info(
                         f"Post-upload guard: processing={proc}, "
@@ -266,6 +314,7 @@ def upload_video(
     privacy_status: str = "public",
     channel: str | None = None,
     title_override: Optional[str] = None,
+    publish_at: str | None = None,
 ) -> str:
     """
     Upload a video to YouTube with metadata from metadata.json.
@@ -274,7 +323,13 @@ def upload_video(
     title_override: use a different title than metadata.json (e.g. a
     " #shorts" suffix when uploading a project's 9:16 companion — without
     it the FIX-054 idempotency guard sees the long video's title and skips).
+    publish_at: optional future ISO-8601 UTC publish time. Scheduled videos
+    must upload as private; YouTube makes them public at this time.
+    Idempotency reuses an existing upload only when its publish schedule
+    matches this request, so retries cannot silently change release timing.
     """
+    effective_privacy, scheduled_at = _scheduled_upload_status(
+        privacy_status, publish_at)
     logger.info(f"Preparing to upload {video_path.name} to YouTube...")
     youtube = get_authenticated_service(channel=channel)
 
@@ -304,11 +359,13 @@ def upload_video(
             "defaultLanguage": metadata.get("language", "en")
         },
         "status": {
-            "privacyStatus": privacy_status,
+            "privacyStatus": effective_privacy,
             "selfDeclaredMadeForKids": False,
             "containsSyntheticMedia": True
         }
     }
+    if scheduled_at:
+        body["status"]["publishAt"] = scheduled_at
 
     # Video upload
     # FIX-054: idempotency guard — a "failed" upload may have actually reached
@@ -331,6 +388,14 @@ def upload_video(
             for v in existing.get("items", []):
                 if v["snippet"].get("title") != title:
                     continue
+                status = v.get("status") or {}
+                schedule_matches = _existing_upload_matches_schedule(
+                    status, privacy_status, scheduled_at)
+                if not schedule_matches:
+                    logger.warning(
+                        f"Same-title upload {v['id']} has different visibility/schedule; "
+                        "continuing with a new upload")
+                    continue
                 have_s = _iso8601_seconds(
                     (v.get("contentDetails") or {}).get("duration", "")) or 0.0
                 looks_dup = (not want_s or not have_s or
@@ -338,7 +403,7 @@ def upload_video(
                 if looks_dup:
                     logger.warning(
                         f"Upload skipped — '{title[:50]}' already on channel "
-                        f"as {v['id']} ({v['status'].get('privacyStatus')})")
+                        f"as {v['id']} ({status.get('privacyStatus')})")
                     return v["id"]
                 # FIX-081: same title but a very different length = a DIFFERENT
                 # render (a short already carrying the headline must not block
@@ -413,6 +478,7 @@ def upload_video(
 
     # Post-upload guard: confirm transcoding finished and privacy held
     # (catches wedged transcodes AND privacy drift; 2026-09-26 incidents).
-    _reassert_after_processing(youtube, video_id, privacy_status)
+    _reassert_after_processing(youtube, video_id, effective_privacy,
+                               publish_at=scheduled_at)
 
     return video_id

@@ -90,7 +90,7 @@ def generate_short(script: Script, template: dict, project_dir: Path) -> Path | 
     import copy
     short_script = copy.deepcopy(script)
     short_script.title = f"{script.title} (Short)"
-    short_script.scenes = sequence
+    short_script.scenes = copy.deepcopy(sequence)
     short_script.total_scenes = len(sequence)
     short_script.estimated_duration_minutes = max_dur / 60.0
     
@@ -109,33 +109,25 @@ def generate_short(script: Script, template: dict, project_dir: Path) -> Path | 
     # We will assemble it in a specific subfolder to avoid overwriting 16:9 assets
     shorts_dir = project_dir / "shorts_output"
     shorts_dir.mkdir(exist_ok=True)
+    short_script.save(shorts_dir / "script.json")
 
     try:
         # Use the standard assembler but with the 9:16 template
         final_short = assemble_video(short_script, short_template, shorts_dir)
-        
+        from pipeline.visual_director import qc_gate as _qc_gate
+        _checked, _shippable, _qc_issues = _qc_gate(
+            Path(final_short), expected_size=(1080, 1920),
+            report_dir=shorts_dir, project_dir=shorts_dir)
+        if not _shippable:
+            raise RuntimeError("short render failed final QC: "
+                               + "; ".join(_qc_issues))
+
         # Move it to the main project folder
         target = project_dir / "final_9x16_short.mp4"
         import shutil
         shutil.move(str(final_short), str(target))
         log.info(f"[bold green]✅ Short generated:[/bold green] {target.name}")
 
-        # FIX-056: same final QC gate as every other render — frame grid,
-        # sharpness, flat-frame (gradient fallback) and loudness checks.
-        # FIX-057: deep review (scene attribution + fallback ledger + Gemini
-        # frame review) since project_dir is available here.
-        # Warnings are recorded; criticals surface to the caller.
-        try:
-            from pipeline.visual_director import final_qc, classify_qc
-            ok, issues = final_qc(target, expected_size=(1080, 1920),
-                                  report_dir=project_dir, project_dir=project_dir)
-            crit, warn = classify_qc(issues)
-            for w in warn:
-                log.warning(f"  QC warning: {w}")
-            if crit:
-                log.warning(f"  QC critical in short: {crit}")
-        except Exception as qc_err:
-            log.info(f"  Short QC skipped ({qc_err})")
         return target
     except Exception as e:
         log.error(f"Failed to generate Short: {e}")

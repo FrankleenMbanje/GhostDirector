@@ -17,7 +17,7 @@ import os
 import sys
 import time
 import subprocess
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time as day_time, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -35,8 +35,15 @@ SCHEDULE_NAME = "famefiles-daily"
 POLL_SECONDS = 60      # wake-up cadence of the persistent loop
 STALE_RUN_HOURS = 6    # a run older than this without progress is failed
 
-# FIX-080 (operator order 2026-10-02): EVERY day = 3 shorts + 1 doc, every
-# upload PUBLIC, and a failure must cost one stage — never the day.
+# Daily release cadence (Africa/Harare): one morning, one afternoon, two
+# evening uploads. The render job may start after today's morning slot (GitHub
+# starts at 10:30 local), so the helper schedules the whole slate for the next
+# day rather than placing some videos into past slots. Keep two hours of
+# upload/render headroom before a slot to avoid missing publishAt mid-run.
+DAILY_RELEASE_SLOTS = ((9, 0), (14, 0), (18, 0), (20, 0))
+PUBLISH_SLOT_LEAD = timedelta(hours=2)
+
+# FIX-080 (operator order 2026-10-02): EVERY day = 3 shorts + 1 doc.
 SHORTS_PER_DAY_DEFAULT = 3
 STAGE_ATTEMPTS_DEFAULT = 2     # in-run retry per stage (Gemini 503 storms)
 STAGE_COOLDOWN_S = 300         # pause between a stage's attempts
@@ -66,13 +73,50 @@ def is_due(now: datetime | None = None) -> bool:
     return n >= due_time
 
 
+def _daily_publish_times(count: int, now: datetime | None = None) -> list[str]:
+    """Return `count` future UTC publishAt timestamps in the daily slot order.
+
+    If the complete requested slate no longer fits in today's remaining slots,
+    roll it together to tomorrow. Larger slates then continue in order.
+    """
+    if count <= 0:
+        return []
+    ref = now or now_harare()
+    ref = ref.replace(tzinfo=HARARE) if ref.tzinfo is None else ref.astimezone(HARARE)
+    publish_not_before = ref + PUBLISH_SLOT_LEAD
+    start_day = ref.date()
+    today_slots = [datetime.combine(start_day, day_time(h, m), tzinfo=HARARE)
+                   for h, m in DAILY_RELEASE_SLOTS]
+    same_day_count = min(count, len(DAILY_RELEASE_SLOTS))
+    first_slots_available = [slot for slot in today_slots
+                             if slot >= publish_not_before]
+    # If the entire requested slate no longer fits today, roll it together to
+    # tomorrow. Otherwise schedule only in future slots today, then continue
+    # the remaining sequence on later days.
+    if len(first_slots_available) < same_day_count:
+        start_day += timedelta(days=1)
+
+    scheduled: list[datetime] = []
+    day = start_day
+    while len(scheduled) < count:
+        for hour, minute in DAILY_RELEASE_SLOTS:
+            candidate = datetime.combine(day, day_time(hour, minute), tzinfo=HARARE)
+            if candidate >= publish_not_before:
+                scheduled.append(candidate)
+                if len(scheduled) == count:
+                    break
+        day += timedelta(days=1)
+    return [dt.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+            for dt in scheduled]
+
+
 def _build_stages(channel: str) -> list[list[str]]:
     """The day's production slate: N shorts first, then one 8-min doc.
 
     FIX-080: shorts run FIRST so a long-form failure at the tail can never
     cost the day's distribution (the discovery engine — 343-1605 views vs
-    12-49 on long-form). Every stage uploads PUBLIC; the final QC gate and
-    the compliance gate remain the safety net. GD_SHORTS_PER_DAY overrides
+    12-49 on long-form). The final QC gate and the compliance gate remain
+    the safety net. GD_SHORTS_PER_DAY overrides
     the count (clamped to >= 1); GD_SHORTS_ONLY=1 skips the doc entirely.
     The no-repeat ledger keeps every short on a different story.
     """
@@ -87,6 +131,23 @@ def _build_stages(channel: str) -> list[list[str]]:
         stages.append(["--trending", "--longform", "--channel", channel,
                        "--privacy", "public"])
     return stages
+
+
+def _doc_state(doc_marks: list[bool], gated_reason: str) -> str:
+    """FIX-102: ok | failed | skipped | gated for the day's long-form stage.
+
+    A deliberate gate-skip must never be reported as a failure, or every
+    gated day reads like a broken pipeline and the operator learns to ignore
+    the summary. A real failure is never excused by a stale marker.
+    """
+    ok = bool(doc_marks) and doc_marks[0]
+    if gated_reason and ok:
+        return "gated"
+    if ok:
+        return "ok"
+    if doc_marks:
+        return "failed"
+    return "skipped"
 
 
 def _write_daily_result(result: str, shorts_ok: int, shorts_total: int,
@@ -132,9 +193,10 @@ def _run_intel(channel: str, env: dict) -> None:
         return
     parts: list[str] = []
     for label, args in (("CHANNEL MEMORY (manual + automated)", ["--channel-memory"]),
+                        ("ANALYTICS (watch hours + subscriber conversion)", ["--sync-analytics"]),
                         ("COMPETITOR SCAN (watch-list outliers)", ["--scout"])):
         try:
-            proc = subprocess.run([sys.executable, "main.py", *args],
+            proc = subprocess.run([sys.executable, "main.py", *args, "--channel", channel],
                                   cwd=Path.cwd(), env=env, capture_output=True,
                                   text=True, timeout=900)
             body = (proc.stdout or "")[-6000:].strip()
@@ -152,8 +214,13 @@ def _run_intel(channel: str, env: dict) -> None:
         mem_path = Path("db") / "channel_memory.json"
         if mem_path.exists():
             memory = json.loads(mem_path.read_text(encoding="utf-8"))
+        from pipeline.analytics import load_store
+        growth = load_store().get("channels", {}).get(channel, {})
+        stats = dict((memory or {}).get("channel_stats") or {})
+        if growth.get("earn_snapshot"):
+            stats["earn_snapshot"] = growth["earn_snapshot"]
         parts.insert(0, "## DIAGNOSIS\n" + "\n".join(
-            diagnose(daily, memory, _queued_topics())))
+            diagnose(daily, memory, _queued_topics(), channel_stats=stats)))
         # FIX-089: report any automated upload that is no longer PUBLIC.
         # The post-upload guard only covers the upload window; this reads
         # the live status the catalogue refresh just captured (the 10-02
@@ -264,27 +331,43 @@ def run_daily(force: bool = False, channel: str = "famefiles") -> int:
         # pipeline's own duplicate check defers to the scheduler's gate
         # (the parent already holds the day's lock for this production).
         env = dict(os.environ, GD_WITHIN_DAILY=today)
+        # The scheduler owns this run's gate marker and per-stage release
+        # timestamps. Keep GD_DOC_GATE available as the documented opt-out.
+        env.pop("GD_DOC_GATE_MARKER", None)
+        env.pop("GD_PUBLISH_AT", None)
         # Operator schedule (2026-09-26): the SHORT (discovery engine) ships
         # first, then the 8-min doc on a fresh story. FIX-080 (2026-10-02):
-        # 3 shorts + 1 doc every day, ALL PUBLIC, with a per-stage in-run
-        # retry — a transient Gemini 503 storm costs one stage, not the day.
+        # 3 shorts + 1 doc per day, scheduled into spaced release slots,
+        # with per-stage retries — transient Gemini 503s cost one stage, not the day.
         # Exit 0 counts as "the day shipped": partial days are reported via
         # output/_daily_result.txt, so the workflow's outer retry only fires
         # when NOTHING shipped (no wasted duplicate short runs).
         stages = _build_stages(channel)
+        _gate_marker = Path("output") / "_doc_gated.txt"
+        try:
+            _gate_marker.unlink(missing_ok=True)
+        except OSError:
+            pass
+        publish_times = _daily_publish_times(len(stages), now_harare())
         try:
             attempts = max(int(os.environ.get("GD_STAGE_ATTEMPTS")
                                or STAGE_ATTEMPTS_DEFAULT), 1)
         except ValueError:
             attempts = STAGE_ATTEMPTS_DEFAULT
         results: list[tuple[str, bool]] = []
-        for stage_args in stages:
+        for stage_index, stage_args in enumerate(stages):
             label = "longform" if "--longform" in stage_args else "short"
             stage_ok = False
+            stage_env = dict(env, GD_PUBLISH_AT=publish_times[stage_index])
+            if "--longform" in stage_args:
+                stage_env["GD_DOC_GATE_MARKER"] = str(_gate_marker.resolve())
+            else:
+                stage_env.pop("GD_DOC_GATE_MARKER", None)
+            log.info(f"Daily release slot ({label}): {publish_times[stage_index]} UTC")
             for run_no in range(1, attempts + 1):
                 cmd = [sys.executable, "main.py", *stage_args]
                 log.info(f"Daily production command ({label} {run_no}/{attempts}): {cmd}")
-                proc = subprocess.run(cmd, cwd=Path.cwd(), env=env)
+                proc = subprocess.run(cmd, cwd=Path.cwd(), env=stage_env)
                 if proc.returncode == 0:
                     stage_ok = True
                     break
@@ -296,8 +379,21 @@ def run_daily(force: bool = False, channel: str = "famefiles") -> int:
         shorts = [s_ok for lbl, s_ok in results if lbl == "short"]
         shorts_ok, shorts_total = sum(shorts), len(shorts)
         doc_marks = [d_ok for lbl, d_ok in results if lbl == "longform"]
-        doc_state = ("ok" if doc_marks and doc_marks[0]
-                     else "failed" if doc_marks else "skipped")
+        # FIX-102: a gate-skipped doc is not a failure. The doc stage exits 0
+        # after leaving output/_doc_gated.txt (no breakout short to ride), so
+        # the day reports "doc=gated" — distinct from "skipped" (no doc stage
+        # at all, GD_SHORTS_ONLY=1) and from "failed". Without this every
+        # gated day would read as a broken pipeline in the summary and the
+        # daily diagnosis, and the operator would learn to ignore both.
+        try:
+            _gated = _gate_marker.read_text(encoding="utf-8").strip()
+        except OSError:
+            _gated = ""
+        try:
+            _gate_marker.unlink(missing_ok=True)
+        except OSError:
+            pass
+        doc_state = _doc_state(doc_marks, _gated)
         any_ok = any(s_ok for _, s_ok in results)
         full_ok = all(s_ok for _, s_ok in results)
         result_txt = "FULL" if full_ok else ("PARTIAL" if any_ok else "FAILED")
@@ -321,6 +417,147 @@ def run_daily(force: bool = False, channel: str = "famefiles") -> int:
         return 0 if any_ok else 1
     finally:
         gate.release_file_lock()
+
+
+def _plan_now() -> datetime:
+    """The clock the day's slate is planned from.
+
+    The cloud workflow sets GD_PLAN_NOW to the run's start, so every per-video
+    job plans the same publish slots no matter when its runner actually starts.
+    """
+    raw = (os.environ.get("GD_PLAN_NOW") or "").strip()
+    if raw:
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(HARARE)
+        except ValueError:
+            log.warning(f"GD_PLAN_NOW={raw!r} is not an ISO timestamp — using the wall clock")
+    return now_harare()
+
+
+def _stage_attempts() -> int:
+    try:
+        return max(int(os.environ.get("GD_STAGE_ATTEMPTS") or STAGE_ATTEMPTS_DEFAULT), 1)
+    except ValueError:
+        return STAGE_ATTEMPTS_DEFAULT
+
+
+def _stage_result_path(index: int) -> Path:
+    return Path("output") / f"_stage_{index}.txt"
+
+
+def _write_stage_result(index: int, label: str, status: str, gated: str = "") -> None:
+    """Per-video outcome, written by the stage job and read by finalize."""
+    out = _stage_result_path(index)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(f"stage={index}\nlabel={label}\nstatus={status}\ngated={gated}\n",
+                   encoding="utf-8")
+
+
+def _read_stage_result(index: int) -> dict[str, str]:
+    try:
+        text = _stage_result_path(index).read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    fields: dict[str, str] = {}
+    for line in text.splitlines():
+        if "=" in line:
+            key, _, value = line.partition("=")
+            fields[key.strip()] = value.strip()
+    return fields
+
+
+def run_stage(index: int, channel: str = "famefiles") -> int:
+    """Produce ONE video of the day's slate (1-based) in this process.
+
+    Each video runs in its own cloud job with its own time budget and its own
+    publish slot (GD_PUBLISH_AT). The slate itself is planned from GD_PLAN_NOW,
+    so every job agrees on which slot belongs to which video. Stages past the
+    end of today's slate (e.g. the doc under GD_SHORTS_ONLY=1) are a recorded
+    no-op. Returns 0 when the video shipped (or was skipped), 1 when it failed.
+    """
+    stages = _build_stages(channel)
+    if not 1 <= index <= len(stages):
+        _write_stage_result(index, "skipped", "skipped")
+        print(f"[stage {index}] not part of today's slate ({len(stages)} stages) — skipped.")
+        return 0
+
+    stage_args = stages[index - 1]
+    label = "longform" if "--longform" in stage_args else "short"
+    publish_times = _daily_publish_times(len(stages), _plan_now())
+    env = dict(os.environ, GD_WITHIN_DAILY=date_str_harare())
+    env.pop("GD_DOC_GATE_MARKER", None)
+    env["GD_PUBLISH_AT"] = publish_times[index - 1]
+    gate_marker = Path("output") / "_doc_gated.txt"
+    if label == "longform":
+        try:
+            gate_marker.unlink(missing_ok=True)
+        except OSError:
+            pass
+        env["GD_DOC_GATE_MARKER"] = str(gate_marker.resolve())
+
+    print(f"[stage {index}] {label} — release slot {env['GD_PUBLISH_AT']}")
+    attempts = _stage_attempts()
+    ok = False
+    for run_no in range(1, attempts + 1):
+        cmd = [sys.executable, "main.py", *stage_args]
+        log.info(f"Stage {index} command ({label} {run_no}/{attempts}): {cmd}")
+        proc = subprocess.run(cmd, cwd=Path.cwd(), env=env)
+        if proc.returncode == 0:
+            ok = True
+            break
+        log.warning(f"Stage {index} failed (exit {proc.returncode}): {stage_args}")
+        if run_no < attempts:
+            log.info(f"Cooling down {STAGE_COOLDOWN_S}s before retrying stage {index}")
+            time.sleep(STAGE_COOLDOWN_S)
+
+    gated = ""
+    if label == "longform":
+        # FIX-102: a gate-skipped doc exits 0 and leaves its reason behind.
+        try:
+            gated = gate_marker.read_text(encoding="utf-8").strip()
+        except OSError:
+            gated = ""
+        try:
+            gate_marker.unlink(missing_ok=True)
+        except OSError:
+            pass
+    _write_stage_result(index, label, "ok" if ok else "failed", gated)
+    print(f"[stage {index}] {label}: {'ok' if ok else 'FAILED'}"
+          + (f" (doc gated: {gated})" if gated else ""))
+    return 0 if ok else 1
+
+
+def finalize_day(channel: str = "famefiles") -> int:
+    """Roll the per-video stage results into the day's outcome, then learn.
+
+    Run after every stage job (even when some failed). Writes the same
+    output/_daily_result.txt and daily intel as the single-process run, and
+    the day ships when at least one video did. Returns 1 only when NOTHING
+    shipped.
+    """
+    stages = _build_stages(channel)
+    results: list[tuple[str, bool, str]] = []
+    for index, stage_args in enumerate(stages, start=1):
+        fields = _read_stage_result(index)
+        label = "longform" if "--longform" in stage_args else "short"
+        results.append((label, fields.get("status") == "ok", fields.get("gated", "")))
+    shorts = [ok for lbl, ok, _ in results if lbl == "short"]
+    doc_marks = [ok for lbl, ok, _ in results if lbl == "longform"]
+    gated = next((g for lbl, _, g in results if lbl == "longform" and g), "")
+    doc_state = _doc_state(doc_marks, gated)
+    any_ok = any(ok for _, ok, _ in results)
+    full_ok = all(ok for _, ok, _ in results)
+    result_txt = "FULL" if full_ok else ("PARTIAL" if any_ok else "FAILED")
+    _write_daily_result(result_txt, sum(shorts), len(shorts), doc_state)
+    print(f"[daily] Production for {date_str_harare()}: {result_txt} "
+          f"(shorts {sum(shorts)}/{len(shorts)}, doc {doc_state})")
+
+    _run_intel(channel, dict(os.environ, GD_WITHIN_DAILY=date_str_harare()))
+    db = _db()
+    if db is not None:
+        db.set_schedule_state(SCHEDULE_NAME, last_run=datetime.now(timezone.utc),
+                              last_result=("success" if full_ok else result_txt.lower()))
+    return 0 if any_ok else 1
 
 
 def loop_forever(poll_seconds: int = POLL_SECONDS) -> None:  # pragma: no cover

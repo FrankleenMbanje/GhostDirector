@@ -35,7 +35,7 @@ log = get_logger("assembler_ffmpeg")
 # preparation pipeline changes (easing, motion, grading) so --resume never
 # reuses stale cached renders from an older edit engine. Prepared clips and
 # SFX stems embed this tag in their filenames.
-PREPARED_V = "v4"  # v4: FIX-051 b-roll cutaway alternation (main shot ↔ real footage)
+PREPARED_V = "v6"  # contiguous groups, bounded holds, normalized footage timebase
 # v3: FIX-045 taste layer (mood-driven cuts/zoom) + VidRush captions
 
 
@@ -676,6 +676,11 @@ def _prepare_scene_entry(args: tuple) -> tuple:
                     f"Concat punch-cuts for scene {idx}",
                 )
             # (start, len) per sub-cut — consumed by the Resolve FCPXML export
+            expected_duration = sum(length for _, _, length in cuts)
+            actual_duration = get_duration(prepared_path)
+            if abs(actual_duration - expected_duration) > 0.2:
+                raise RuntimeError(f"Scene {idx} picture duration {actual_duration:.2f}s "
+                                   f"does not match planned {expected_duration:.2f}s")
             cuts_meta = [(round(cs, 3), round(cl, 3)) for (_, cs, cl) in cuts]
             return idx, str(prepared_path), True, cuts_meta
 
@@ -699,7 +704,7 @@ def _prepare_all_scenes_parallel(
         "scene_number", "narration", "visual_prompt", "alternative_visual_prompts",
         "visual_type", "mood", "people_to_show", "duration_target_seconds",
         "sfx_cue", "broll_keywords", "audio_path", "audio_duration_seconds",
-        "video_path", "photo_path", "timestamps", "source_url", "source_title",
+        "video_path", "photo_path", "broll_video_path", "timestamps", "source_url", "source_title",
         "source_channel",
     )
     temp_dir_str = str(temp_dir)
@@ -750,19 +755,30 @@ def _sentence_groups(stamps: list[dict], n_cuts: int) -> list[list[dict]]:
         else:
             sentences.append(current)
 
-    groups: list[list[list[dict]]] = [[] for _ in range(n_cuts)]
-    sizes = [0] * n_cuts
-    for sent in sorted(sentences, key=len, reverse=True):
-        i = sizes.index(min(sizes))
-        groups[i].append(sent)
-        sizes[i] += len(sent)
-
-    # Restore chronological sentence order inside each group
+    # Groups must be CONTIGUOUS. Balancing largest-first interleaved early
+    # and late sentences, producing reversed midpoints and zero-length cuts.
+    count = min(max(1, n_cuts), len(sentences))
     out = []
-    for g in groups:
-        if g:
-            out.append([w for sent in sorted(g, key=lambda s: s[0]["start"]) for w in sent])
-    out.sort(key=lambda ws: ws[0]["start"])
+    start = 0
+    remaining_words = sum(len(s) for s in sentences)
+    for group in range(count):
+        left = count - group
+        if left == 1:
+            end = len(sentences)
+        else:
+            target = remaining_words / left
+            end = start + 1
+            words = len(sentences[start])
+            while end < len(sentences) - (left - 1):
+                candidate = words + len(sentences[end])
+                if abs(candidate - target) > abs(words - target):
+                    break
+                words = candidate
+                end += 1
+        chunk = [w for sent in sentences[start:end] for w in sent]
+        out.append(chunk)
+        remaining_words -= len(chunk)
+        start = end
     return out
 
 
@@ -799,6 +815,7 @@ def _prepare_photo_cuts(
 def _compute_cut_points(
     stamps: list[dict], duration: float,
     taste: dict | None = None,
+    max_shot: float = 6.0,
 ) -> tuple[list[float], int] | None:
     """Shared cut-point math for photo and video punch-cuts.
 
@@ -809,13 +826,31 @@ def _compute_cut_points(
     Returns (cuts, n_cuts) where cuts are scene-local seconds, or None when
     the scene is too short / has too few sentences to cut.
     """
-    if duration < 6.0 or len(stamps) < 8:
+    import math
+
+    def bounded(points):
+        points = list(points)
+        while len(points) > 2:
+            tiny = next((i for i, (a, b) in enumerate(zip(points, points[1:])) if b - a < 1.2), None)
+            if tiny is None:
+                break
+            del points[1 if tiny == 0 else tiny]
+        result = [points[0]]
+        for a, b in zip(points, points[1:]):
+            pieces = max(1, math.ceil((b - a) / max_shot))
+            result.extend(round(a + (b - a) * j / pieces, 3)
+                          for j in range(1, pieces + 1))
+        return (result, len(result) - 1) if len(result) > 2 else None
+
+    if duration <= 0 or max_shot <= 0:
         return None
+    if duration < 6.0 or len(stamps) < 8:
+        return bounded([0.0, duration])
 
     # Need at least 2 sentences to have somewhere to cut
     probe = _sentence_groups(stamps, 2)
     if len(probe) < 2:
-        return None
+        return bounded([0.0, duration])
 
     t = taste or {}
     cut_sec = float(t.get("cut_sec", 4.0))
@@ -825,7 +860,7 @@ def _compute_cut_points(
     n_cuts = int(max(2, min(max_cuts, duration // cut_sec)))
     groups = _sentence_groups(stamps, n_cuts)
     if len(groups) < 2:
-        return None
+        return bounded([0.0, duration])
     n_cuts = len(groups)
 
     # Cut points at the temporal midpoint between adjacent groups' words —
@@ -840,7 +875,9 @@ def _compute_cut_points(
     # min_shot — a human editor merges it instead of flashing a frame.
     while len(cuts) > 2 and (cuts[-1] - cuts[-2]) < min_shot:
         del cuts[-2]
-    return cuts, len(cuts) - 1
+    # Picture cuts may fall inside a sentence; the continuous voice track
+    # is assembled separately, so this never trims spoken words.
+    return bounded(cuts)
 
 
 def _build_scene_cuts(
@@ -859,7 +896,10 @@ def _build_scene_cuts(
     stamps = scene.timestamps or []
 
     taste = _edit_taste(scene, idx)  # FIX-045: mood-driven intensity
-    computed = _compute_cut_points(stamps, duration, taste=taste)
+    resolution = visuals_cfg.get("resolution", "1920x1080")
+    rw, rh = map(int, resolution.split("x"))
+    computed = _compute_cut_points(stamps, duration, taste=taste,
+                                   max_shot=4.0 if rh > rw else 6.0)
     if computed is None:
         return None
     cuts, n_cuts = computed
@@ -897,7 +937,8 @@ def _build_scene_cuts(
         if source_kind == "photo" and source_photo and source_photo.exists():
             # FIX-051: odd cuts use the paired footage cutaway when one is
             # available — even cuts stay on the still.
-            if cutaway_video is not None and k % 2 == 1:
+            if (cutaway_video is not None and k % 2 == 1
+                    and get_duration(cutaway_video) + 0.02 >= seg_len):
                 cw_probe = get_duration(cutaway_video)
                 cw_max = max(0.0, cw_probe - seg_len)
                 cw_start = random.Random(f"cutsrc:{idx}:{k}").uniform(0.0, cw_max) if cw_max > 0.05 else 0.0
@@ -1618,6 +1659,11 @@ def assemble_video(
 
         # Add narration audio (video length == audio length by construction)
         if scene.audio_path and Path(scene.audio_path).exists():
+            picture_duration = get_duration(prepared_path)
+            narration_duration = get_duration(Path(scene.audio_path))
+            if picture_duration + 0.2 < narration_duration:
+                raise RuntimeError(f"Scene {idx} picture is shorter than narration "
+                                   f"({picture_duration:.2f}s vs {narration_duration:.2f}s); refusing to truncate speech")
             clip_with_audio = temp_dir / f"scene_{idx:02d}_with_audio.mp4"
             add_audio_to_video(prepared_path, Path(scene.audio_path), clip_with_audio)
             scene_clips_with_audio.append(clip_with_audio)
@@ -1811,7 +1857,9 @@ def assemble_video(
     generate_ass_subtitles(
         all_timestamps, caption_starts, ass_path,
         caption_cfg, resolution=(width, height),
-        hook_overlay_text=getattr(script, "hook_overlay_text", None),
+        # The kinetic card already contains the headline. Burning the ASS
+        # headline too produced two overlapping copies during the hook.
+        hook_overlay_text=None if hook_card else getattr(script, "hook_overlay_text", None),
         band_overrides=caption_bands,
         callouts=callouts,
     )
@@ -1968,8 +2016,9 @@ def assemble_video(
     final_name = "final_9x16_short.mp4" if is_vertical else "final_16x9.mp4"
     final_path = output_dir / final_name
     shutil.move(str(normalized), str(final_path))
-    if is_vertical and not (output_dir / "final_16x9.mp4").exists():
-        shutil.copyfile(str(final_path), str(output_dir / "final_16x9.mp4"))
+    # No final_16x9.mp4 copy for vertical renders: that name means a real
+    # landscape master. The app's 16:9 tab and upload button then correctly
+    # show "Not rendered" instead of uploading the 9:16 file as 16:9.
 
     # ── Timeline manifest (FIX-004): transition-aware scene starts for metadata
     # chapters, shorts slicing, and any downstream consumer. Lives in the

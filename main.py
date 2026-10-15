@@ -55,6 +55,23 @@ def _verify_llm(allow_offline: bool = False):
         sys.exit(1)
 
 
+def _checked_final_qc(qc_gate, *args, **kwargs):
+    """Run the delivery QC gate and refuse delivery if it cannot prove a pass."""
+    try:
+        result = qc_gate(*args, **kwargs)
+    except Exception as exc:
+        raise RuntimeError(
+            f"final QC could not complete; refusing delivery: {exc}") from exc
+    if not isinstance(result, tuple) or len(result) != 3:
+        raise RuntimeError("final QC returned an invalid result; refusing delivery")
+    _video_path, shippable, issues = result
+    if not shippable:
+        details = "; ".join(str(issue) for issue in issues or [])
+        raise RuntimeError("final QC failed; refusing delivery"
+                           + (f": {details}" if details else ""))
+    return result
+
+
 def _create_project_dir(topic: str) -> Path:
     """Create a unique output directory for this video project."""
     slug = slugify(topic, max_length=50)
@@ -311,13 +328,22 @@ async def run_pipeline(
             from pipeline.visual_director import qc_gate
             vw, vh = map(int, template.get("visuals", {}).get(
                 "resolution", "1920x1080").split("x"))
-            final_path, shippable, qc_issues = qc_gate(
-                Path(final_path), expected_size=(vw, vh),
+            final_path, shippable, qc_issues = _checked_final_qc(
+                qc_gate, Path(final_path), expected_size=(vw, vh),
                 rebuild=lambda: assemble_video(script, template, project_dir),
                 report_dir=project_dir,
                 project_dir=project_dir,
                 repair={"script": script, "template": template},
             )
+            target_minutes = float(template.get("script", {}).get(
+                "target_duration_minutes") or 0)
+            if target_minutes >= 8.0:
+                from pipeline.quality_gate import longform_runtime_issue
+                from utils.ffmpeg_cmd import get_duration
+                runtime_issue = longform_runtime_issue(
+                    get_duration(Path(final_path)), target_minutes)
+                if runtime_issue:
+                    raise RuntimeError(runtime_issue)
             project.final_video_path = str(final_path)
             if shippable:
                 console.print(f"[green]OK[/green] Final QC pass ({len(qc_issues)} warnings)\n" if qc_issues
@@ -331,7 +357,11 @@ async def run_pipeline(
         except SystemExit:
             raise
         except Exception as qc_err:
-            console.print(f"[yellow]⚠ Final QC skipped ({qc_err})[/yellow]")
+            console.print(f"[bold red]✗ Final QC unavailable or failed ({qc_err})[/bold red]")
+            console.print("  Upload blocked — QC must pass before delivery.")
+            project.status = "qc_failed"
+            project.save(project_dir / "project.json")
+            raise SystemExit(1)
 
         # Always generate the DaVinci Resolve bundle (FIX-032): FCPXML 1:1 edit
         # + captions SRT + EDL fallback + push script. FIX-034: --push-resolve
@@ -437,13 +467,11 @@ async def run_pipeline(
                     if short_path.exists():
                         try:
                             from pipeline.visual_director import qc_gate
-                            _sp, short_ok, short_issues = qc_gate(
-                                short_path, expected_size=(1080, 1920),
+                            _sp, short_ok, short_issues = _checked_final_qc(
+                                qc_gate, short_path, expected_size=(1080, 1920),
                                 report_dir=project_dir,
                                 project_dir=project_dir,
                             )
-                            if not short_ok:
-                                raise RuntimeError(f"final QC failed: {short_issues}")
                             short_id = upload_video(
                                 project_dir=project_dir,
                                 video_path=short_path,
@@ -546,8 +574,10 @@ async def run_pipeline(
 @click.option("--pick", "pick_out", type=click.Path(), metavar="OUT.png", help="With --thumbnails: also write the chosen composite as OUT.png")
 @click.option("--daily", "daily_flag", is_flag=True, help="Run today's Fame Files production (idempotent — safe to re-run; needs DATABASE_URL for run locking)")
 @click.option("--status", "status_flag", is_flag=True, help="Show production status from the database (runs, uploads, schedules)")
+@click.option("--daily-stage", "daily_stage", type=int, default=None, metavar="N", help="Produce ONE video of today's slate (1-based). Cloud runs one video per job.")
+@click.option("--daily-finalize", "daily_finalize", is_flag=True, help="Roll the per-video stage results into today's outcome and intel (cloud final job)")
 @click.option("--schedule-loop", "schedule_loop", is_flag=True, help="Run the persistent daily-10:00 Africa/Harare scheduler loop in this process")
-def main(topic, template, tts, mode, shorts, review, auto, batch, upload, force_upload, push_resolve, resolve_render, no_auto_resolve, privacy, channel, resume_dir, sync_analytics, import_ctr, scout, add_competitor, next_topic_flag, ab_video_id, ab_project, title_index, thumb_file, ab_leaderboard, audit, find_competitors, niche, compare_flag, channel_memory_flag, thumbnails_project, styles, pick_out, trending_flag, trending_list, trending_story, longform_flag, no_upload, daily_flag, status_flag, schedule_loop):
+def main(topic, template, tts, mode, shorts, review, auto, batch, upload, force_upload, push_resolve, resolve_render, no_auto_resolve, privacy, channel, resume_dir, sync_analytics, import_ctr, scout, add_competitor, next_topic_flag, ab_video_id, ab_project, title_index, thumb_file, ab_leaderboard, audit, find_competitors, niche, compare_flag, channel_memory_flag, thumbnails_project, styles, pick_out, trending_flag, trending_list, trending_story, longform_flag, no_upload, daily_flag, status_flag, schedule_loop, daily_stage, daily_finalize):
     """GhostDirector — Automated Faceless YouTube Video Factory.
 
     Production: python main.py "TOPIC" --template celebrity_4min --shorts
@@ -581,6 +611,14 @@ def main(topic, template, tts, mode, shorts, review, auto, batch, upload, force_
         from storage.scheduler import loop_forever
         loop_forever()
         return
+    if daily_stage is not None or daily_finalize:
+        from storage.scheduler import run_stage, finalize_day
+        channel_for_stage = (channel if channel in (config.CHANNEL_FAMEFILES,
+                                                    config.CHANNEL_RISEANDRUIN)
+                             else config.CHANNEL_FAMEFILES)
+        if daily_finalize:
+            raise SystemExit(finalize_day(channel=channel_for_stage))
+        raise SystemExit(run_stage(daily_stage, channel=channel_for_stage))
     if daily_flag:
         from storage.scheduler import run_daily
         channel_for_daily = (channel if channel in (config.CHANNEL_FAMEFILES,
@@ -740,7 +778,7 @@ def main(topic, template, tts, mode, shorts, review, auto, batch, upload, force_
     # ── A10: Channel audit / competitor discovery / compare ──
     if audit:
         from pipeline.channel_audit import audit as run_audit, render_audit_report
-        report = run_audit()
+        report = run_audit(channel=channel)
         console.print(render_audit_report(report))
         return
     if find_competitors:

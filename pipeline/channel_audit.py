@@ -125,7 +125,7 @@ def _resolve_my_channel(channel: str | None = None) -> dict | None:
         return None
 
 
-def audit() -> dict:
+def audit(channel: str = "default") -> dict:
     """Full channel audit: public stats + profile + analytics + health rows.
 
     Works in three honest tiers:
@@ -134,8 +134,8 @@ def audit() -> dict:
       - neither          → profile-only audit with the standing playbooks
     """
     profile = ensure_profile()
-    live = _resolve_my_channel()
-    analytics = _load_analytics_summary()
+    live = _resolve_my_channel(channel)
+    analytics = _load_analytics_summary(channel)
 
     audit_rows: list[dict] = []
     if live:
@@ -153,24 +153,24 @@ def audit() -> dict:
 
     # Cadence health from the local packaging log (works without OAuth)
     from utils import channel_state
-    state = channel_state._load("default")
+    state = channel_state._load(channel)
     pkg = state.get("packaging_log", [])
     dates = sorted({e["date"][:10] for e in pkg if e.get("date")})
     if len(dates) >= 2:
-        gap_days = (datetime.fromisoformat(dates[-1]) -
-                    datetime.fromisoformat(dates[-2])).days
+        gap_days = (datetime.now(timezone.utc).date() -
+                    datetime.fromisoformat(dates[-1]).date()).days
         if gap_days > REC_BENCHMARKS["max_days_since_upload"]:
             audit_rows.append({
                 "check": "Upload cadence",
                 "status": "warn",
-                "detail": f"{gap_days} days between last two productions "
+                "detail": f"{gap_days} days since last production "
                           f"(target ≤{REC_BENCHMARKS['max_days_since_upload']})",
             })
         else:
             audit_rows.append({
                 "check": "Upload cadence",
                 "status": "ok",
-                "detail": f"{gap_days} days between last two productions",
+                "detail": f"{gap_days} days since last production",
             })
     else:
         audit_rows.append({
@@ -179,12 +179,14 @@ def audit() -> dict:
             "detail": "Not enough production history yet — ship video #2",
         })
 
-    # Length check: current template tops out at ~3:30 (no mid-roll ads)
+    lengths = [v["length_seconds"] for v in analytics.get("videos", {}).values()
+               if v.get("length_seconds", 0) > 180]
     audit_rows.append({
         "check": "Video length",
-        "status": "warn",
-        "detail": f"Celebrity template renders ~3:30 (<{REC_BENCHMARKS['min_video_length_for_watch_pages'] // 60}:00) "
-                  f"— no mid-roll ad slots; build the 8-min template when daily quota allows",
+        "status": "info",
+        "detail": (f"{len(lengths)} uploads over 3 minutes; average measured runtime "
+                   f"{sum(lengths) / len(lengths) / 60:.1f} minutes. Review retention before adding length."
+                   if lengths else "No measured long-video runtime available; sync analytics."),
     })
 
     if analytics.get("videos"):
@@ -218,7 +220,7 @@ def audit() -> dict:
     audit_rows.append({
         "check": "Shorts funnel",
         "status": "info",
-        "detail": "Post the Short 24h after the master with a pinned-comment link",
+        "detail": "Set the matching documentary as the Short's Related video in Studio; Shorts comment URLs are not clickable.",
     })
 
     return {
@@ -230,12 +232,14 @@ def audit() -> dict:
     }
 
 
-def _load_analytics_summary() -> dict:
+def _load_analytics_summary(channel: str = "default") -> dict:
     """Read db/analytics.json (empty store is fine — the audit degrades gracefully)."""
     try:
         data = json.loads(config.ANALYTICS_STORE_PATH.read_text(encoding="utf-8"))
         if isinstance(data, dict) and isinstance(data.get("videos"), dict):
-            return {"videos": data["videos"], "last_sync": data.get("last_sync")}
+            return {"videos": {k: v for k, v in data["videos"].items()
+                               if v.get("channel", "default") == channel},
+                    "last_sync": data.get("last_sync")}
     except Exception:
         pass
     return {"videos": {}, "last_sync": None}

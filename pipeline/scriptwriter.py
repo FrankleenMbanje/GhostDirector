@@ -285,6 +285,12 @@ LONG-FORM RETENTION & MONETIZATION RULES:
    - The opening hook (Scene 1) must be under 15 words and immediately open a dramatic knowledge gap.
    - HOOK OVERLAY TEXT (hook_overlay_text): Provide a 5 to 7 word bold on-screen title card hook for muted viewers.
    - Never say "welcome back" or "in this video we will discuss" — open mid-action!
+   - STAKES BY 20 SECONDS: the audience must hear the stake (a dollar figure,
+     a loss, a deadline, a named person in trouble) within the first 20 seconds
+     of narration (about the first 2-3 scenes). Backstory, dates and context
+     come AFTER that.
+   - Scene 1 must open on the payoff or the most dramatic fact, not on who
+     someone is or how a story began.
 
 2. BEAT ARCHITECTURE & MIDPOINT SAG KILLER (CRITICAL):
    - Structure scenes into 3-5 distinct beats.

@@ -115,8 +115,8 @@ check("photo punch-cut still works", photo_cuts is not None and len(photo_cuts) 
 short_scene = make_scene(audio_duration_seconds=4.0, timestamps=_stamps_from_text("Too short to cut."))
 check("short scene not cut", _prepare_video_cuts(short_scene, template, out, 3) is None)
 
-no_ts = make_scene(timestamps=None)
-check("scene without timestamps not cut", _prepare_video_cuts(no_ts, template, out, 4) is None)
+no_ts = make_scene(timestamps=None, video_path=str(Path("assets/test/bunny.mp4").resolve()))
+check("long scene without timestamps still gets picture cuts", _prepare_video_cuts(no_ts, template, out, 4) is not None)
 
 # ── 1.2 SFX discipline ────────────────────────────────────────────────
 print("\n[1.2] SFX discipline")

@@ -1,4 +1,5 @@
 import sys
+import json
 import re
 import os
 import shutil
@@ -274,7 +275,7 @@ def trim_clip_edges(audio_path: Path, keep_s: float = 0.20,
     try:
         p = subprocess.run(
             ["ffmpeg", "-v", "info", "-i", str(audio_path),
-             "-af", "silencedetect=noise=-40dB:d=0.05", "-f", "null", "-"],
+             "-af", "silencedetect=noise=-40dB:d=0.05,ashowinfo", "-f", "null", "-"],
             capture_output=True, text=True, timeout=30,
         )
         starts = [float(x) for x in
@@ -282,6 +283,12 @@ def trim_clip_edges(audio_path: Path, keep_s: float = 0.20,
         ends = [(float(a), float(b)) for a, b in re.findall(
             r"silence_end: (-?[0-9.]+) \| silence_duration: ([0-9.]+)",
             p.stderr or "")]
+        # MP3 container duration includes encoder delay/padding on Linux
+        # FFmpeg. Compare silence to the decoded sample end, otherwise a
+        # 3.80s silent tail is missed against a 3.84s container duration.
+        samples = re.findall(r"pts_time:([0-9.eE+-]+).*?rate:(\d+) nb_samples:(\d+)", p.stderr or "")
+        decoded_end = (float(samples[-1][0]) + int(samples[-1][2]) / int(samples[-1][1])
+                       if samples else dur)
         lead = 0.0
         trail = 0.0
         for i, s in enumerate(starts):
@@ -289,7 +296,7 @@ def trim_clip_edges(audio_path: Path, keep_s: float = 0.20,
             e = ends[i][0] if i < len(ends) else dur
             if s <= 0.02:
                 lead = max(lead, seg_len)
-            if e >= dur - 0.02:
+            if e >= decoded_end - 0.02:
                 trail = max(trail, seg_len)
     except Exception:
         return dur  # the trim must never break a stage
@@ -456,6 +463,21 @@ async def generate_voices(script: Script, template: dict, output_dir: Path) -> S
 
             # Use scene_number for consistency across all modules
             output_path = scenes_dir / f"scene_{sn}_audio.mp3"
+            import hashlib
+            fingerprint = hashlib.sha256(json.dumps({
+                "narration": scene.narration, "provider": provider,
+                "voice": voice_id, "rate": scene_rate, "pitch": scene_pitch,
+                "pauses": natural_pauses,
+                "elevenlabs": template.get("voice_elevenlabs", {}),
+            }, sort_keys=True).encode()).hexdigest()
+            cache_key_path = scenes_dir / f"scene_{sn}_audio.sha256"
+            cached_key = cache_key_path.read_text().strip() if cache_key_path.exists() else None
+            if cached_key != fingerprint:
+                # Renumbering or rewriting a resumed script must not pair
+                # today's captions with yesterday's spoken words.
+                output_path.unlink(missing_ok=True)
+                (scenes_dir / f"scene_{sn}_timestamps.json").unlink(missing_ok=True)
+                scene.timestamps = []
 
             # Stage-resume guard: a valid existing audio clip is reused so an
             # interrupted run resumes instead of re-spending TTS time (and,
@@ -528,6 +550,7 @@ async def generate_voices(script: Script, template: dict, output_dir: Path) -> S
                     duration = _get_audio_duration(output_path)
                 scene.audio_path = str(output_path)
                 scene.audio_duration_seconds = duration
+                cache_key_path.write_text(fingerprint, encoding="utf-8")
                 logger.debug(f"Scene {sn} audio generated: {duration:.2f}s")
             else:
                 logger.error(

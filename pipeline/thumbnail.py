@@ -30,6 +30,9 @@ _TITLE_STOPWORDS = {
     "the", "a", "an", "and", "of", "in", "on", "at", "to", "for",
     "his", "her", "their", "its", "rise", "fall", "story", "untold",
     "truth", "secret", "life", "inside", "real", "why", "how", "what",
+    "terrifying", "downfall", "biggest", "mogul", "history", "erased",
+    "just", "from", "after", "reveals", "death", "suspicious",
+    "hip", "hop", "hiphop",
 }
 
 
@@ -256,34 +259,28 @@ def generate_thumbnail(script: Script, template: dict, output_dir: Path) -> Path
     # Boost contrast and saturation slightly for pop
     bg_image = ImageEnhance.Contrast(bg_image).enhance(1.18)
     bg_image = ImageEnhance.Color(bg_image).enhance(1.22)
+    clean_subject_bg = bg_image.copy()
 
-    # ── Apply half-gradient overlay on the text side (LEFT side) ──
-    overlay_r = int(color_overlay.lstrip("#")[:2], 16)
-    overlay_g = int(color_overlay.lstrip("#")[2:4], 16)
-    overlay_b = int(color_overlay.lstrip("#")[4:6], 16)
+    # The clean_subject style preserves the underlying photography. All
+    # stylized legacy concepts retain their gradient and vignette treatment.
+    preferred = thumb_cfg.get("preferred_styles") or []
+    clean_subject_only = bool(preferred) and preferred[0] == "clean-subject"
+    if not clean_subject_only:
+        gradient = _make_gradient_overlay(width, height, (10, 10, 15), max_alpha=230, exponent=1.4)
+        bg_rgba = bg_image.convert("RGBA")
+        bg_rgba = Image.alpha_composite(bg_rgba, gradient)
+        bg_image = bg_rgba.convert("RGB")
 
-    # Darkest on left (for text readability), fading to transparent on right
-    # (subject face). Vectorized once per render — the old per-pixel loop was
-    # ~3.7M putpixel calls across the base + 3 concept re-renders.
-    gradient = _make_gradient_overlay(width, height, (10, 10, 15), max_alpha=230, exponent=1.4)
-
-    bg_rgba = bg_image.convert("RGBA")
-    bg_rgba = Image.alpha_composite(bg_rgba, gradient)
-    bg_image = bg_rgba.convert("RGB")
-
-    # ── Subtle vignette ──
-    vignette = Image.new("L", (width, height), 255)
-    v_draw = ImageDraw.Draw(vignette)
-    cx, cy = width // 2, height // 2
-    max_r = (cx**2 + cy**2) ** 0.5
-    for r in range(int(max_r), 0, -4):
-        brightness = max(0, min(255, int(255 - 90 * (r / max_r) ** 3)))
-        v_draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=brightness)
-    r_ch, g_ch, b_ch = bg_image.split()
-    r_out = ImageChops.multiply(r_ch, vignette)
-    g_out = ImageChops.multiply(g_ch, vignette)
-    b_out = ImageChops.multiply(b_ch, vignette)
-    bg_image = Image.merge("RGB", (r_out, g_out, b_out))
+        vignette = Image.new("L", (width, height), 255)
+        v_draw = ImageDraw.Draw(vignette)
+        cx, cy = width // 2, height // 2
+        max_r = (cx**2 + cy**2) ** 0.5
+        for r in range(int(max_r), 0, -4):
+            brightness = max(0, min(255, int(255 - 90 * (r / max_r) ** 3)))
+            v_draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=brightness)
+        r_ch, g_ch, b_ch = bg_image.split()
+        bg_image = Image.merge("RGB", tuple(
+            ImageChops.multiply(channel, vignette) for channel in (r_ch, g_ch, b_ch)))
 
     # ── Power Hook Typography (Top/Center-Left Anchored) ──
     draw = ImageDraw.Draw(bg_image)
@@ -308,17 +305,18 @@ def generate_thumbnail(script: Script, template: dict, output_dir: Path) -> Path
             power_words = meaningful[:3] if len(meaningful) >= 3 else all_words[:3]
 
     # ── Render Concept 1: Subject Focal + Left Power Typography ──
-    v1_img = _render_concept_focal(bg_image.copy(), power_words, font_size, width, height)
+    concept_bg = clean_subject_bg if clean_subject_only else bg_image
+    v1_img = _render_concept_focal(concept_bg.copy(), power_words, font_size, width, height)
     v1_path = output_dir / "thumbnail_v1_focal.png"
     v1_img.save(str(v1_path), "PNG", quality=95)
 
     # ── Render Concept 2: High-Contrast Accent Box / Pill ──
-    v2_img = _render_concept_split_box(bg_image.copy(), power_words, font_size, width, height)
+    v2_img = _render_concept_split_box(concept_bg.copy(), power_words, font_size, width, height)
     v2_path = output_dir / "thumbnail_v2_split.png"
     v2_img.save(str(v2_path), "PNG", quality=95)
 
     # ── Render Concept 3: Dark Vignette Minimal Statement + Accent Bar ──
-    v3_img = _render_concept_minimal(bg_image.copy(), power_words, font_size, width, height)
+    v3_img = _render_concept_minimal(concept_bg.copy(), power_words, font_size, width, height)
     v3_path = output_dir / "thumbnail_v3_minimal.png"
     v3_img.save(str(v3_path), "PNG", quality=95)
 
@@ -334,18 +332,19 @@ def generate_thumbnail(script: Script, template: dict, output_dir: Path) -> Path
         _EXCLUSIVE_KIT["primary"] = script.scenes[subject_idx].photo_path
     _EXCLUSIVE_KIT["secondary"] = _pick_secondary_face(script, subject_idx, output_dir)
 
+    style_bg = clean_subject_bg if clean_subject_only else bg_image
     style_rows = render_style_variants(
-        bg_image.copy(), power_words, font_size, width, height, output_dir,
+        style_bg.copy(), power_words, font_size, width, height, output_dir,
         hook_text=(getattr(script, "hook_overlay_text", None) or "") + " " + (script.title or ""),
         niche=thumb_cfg.get("niche", config.CHANNEL_NICHE),
-        preferred_styles=thumb_cfg.get("preferred_styles") or None,
+        preferred_styles=preferred or None,
+        clean_subject_words=_clean_subject_words(script),
     )
 
     # Primary thumbnail for backward compatibility. When the template names
     # preferred_styles, that style SHIPS as the primary (the operator's look
     # beats the v1 default); the full matrix stays on disk for A/B swaps.
     primary_img = v1_img
-    preferred = thumb_cfg.get("preferred_styles") or []
     if preferred:
         row = next((r for r in style_rows if r.get("id") == preferred[0]), None)
         if row and (output_dir / row["file"]).exists():
@@ -491,6 +490,39 @@ def _render_concept_minimal(bg_image: Image.Image, power_words: list[str], font_
 # A9: Style-library renderer
 # ════════════════════════════════════════════
 
+def _clean_subject_words(script: Script) -> list[str]:
+    """Choose up to two words naming the lead person in the documentary."""
+    title = getattr(script, "title", "") or ""
+    title_words = _subject_tokens(title)
+    people_by_scene = [getattr(scene, "people_to_show", []) or []
+                       for scene in (getattr(script, "scenes", []) or [])]
+
+    # Prefer the first explicitly named person in the headline. Match against
+    # title tokens but preserve the full display name (including short tokens
+    # like DJ) and favor the surname/display-name tail (Diddy Combs).
+    for people in people_by_scene:
+        for person in people:
+            tokens = [token.strip("'’")
+                      for token in re.findall(r"[A-Za-z][A-Za-z'’\-]*", person)]
+            if any(token.lower() in title_words for token in tokens):
+                return [token.upper() for token in tokens[-2:]]
+
+    # Some valid doc headlines are deliberately curiosity-led and omit the
+    # subject's name ("The Terrifying Downfall of Hip-Hop's Biggest Mogul").
+    # Script scenes already identify the lead; use the first scene's person
+    # rather than overlaying irrelevant hook words or sensational adjectives.
+    for people in people_by_scene:
+        if people:
+            tokens = [token.strip("'’")
+                      for token in re.findall(r"[A-Za-z][A-Za-z'’\-]*", people[0])]
+            if tokens:
+                return [token.upper() for token in tokens[-2:]]
+
+    # Only if there is no named visual subject, use meaningful title words.
+    return [word.upper() for word in re.findall(r"[A-Za-z][A-Za-z'’\-]*", title)
+            if word.lower() in title_words][:2]
+
+
 def _layout_left_stack(img, words, font_size, width, height, style):
     """One word per line, left-anchored — accent color on the last word."""
     accent = _hex(style.get("palette", {}).get("accent"), (255, 230, 0))
@@ -632,7 +664,47 @@ def _layout_stamp(img, words, font_size, width, height, style):
     return img_rgba.convert("RGB")
 
 
+def _layout_clean_subject(img, words, font_size, width, height, style):
+    """Keep the documentary subject photo clean; overlay only their name."""
+    img = img.convert("RGB")
+    width, height = img.size
+    text_width = int(width * 0.42)
+    x = int(width * 0.055)
+    available_width = min(text_width, width - x - 12)
+    shade = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    alpha = np.zeros((height, width), dtype=np.uint8)
+    fade_w = max(1, int(width * 0.44))
+    alpha[:, :fade_w] = np.linspace(105, 0, fade_w, dtype=np.uint8)[None, :]
+    shade.putalpha(Image.fromarray(alpha, mode="L"))
+    img = Image.alpha_composite(img.convert("RGBA"), shade).convert("RGB")
+    draw = ImageDraw.Draw(img)
+    name_words = [str(word).strip().upper() for word in (words or []) if str(word).strip()][:2]
+    if not name_words:
+        return img
+    base_size = int(font_size * 0.72)
+    base_font = _get_font(base_size)
+    base_line_h = base_font.getbbox("Ay")[3] - base_font.getbbox("Ay")[1]
+    gap = max(4, int(base_line_h * 0.1))
+    total_h = len(name_words) * base_line_h + (len(name_words) - 1) * gap
+    y = max(int(height * 0.08), (height - total_h) // 2)
+    max_text_width = available_width
+    for i, word in enumerate(name_words):
+        size = base_size
+        fitted = base_font
+        while size > 32 and fitted.getlength(word) > max_text_width:
+            size = max(32, int(size * 0.9))
+            fitted = _get_font(size)
+        bbox = fitted.getbbox(word)
+        text_w = bbox[2] - bbox[0]
+        text_x = x + (available_width - text_w) // 2
+        text_y = y + i * (base_line_h + gap)
+        _stroked_text(draw, (text_x, text_y), word, fitted,
+                      fill=(255, 255, 255), stroke=3)
+    return img
+
+
 _LAYOUTS = {
+    "clean_subject": _layout_clean_subject,
     "left_stack": _layout_left_stack,
     "pill_stack": _layout_pill_stack,
     "corner_short": _layout_corner_short,
@@ -1081,7 +1153,8 @@ def render_style_variants(bg_image: Image.Image, power_words: list[str], font_si
                           width: int, height: int, output_dir: Path,
                           hook_text: str = "", niche: str = "",
                           only_styles: list[str] | None = None,
-                          preferred_styles: list[str] | None = None) -> list[dict]:
+                          preferred_styles: list[str] | None = None,
+                          clean_subject_words: list[str] | None = None) -> list[dict]:
     """Render the recommended style-library variants into output_dir.
 
     User templates lead the ranking (their taste + their A/B data), curated
@@ -1113,6 +1186,8 @@ def render_style_variants(bg_image: Image.Image, power_words: list[str], font_si
         painter = _LAYOUTS.get(style.get("text_layout"), _layout_left_stack)
         treatment = _BG_TREATMENTS.get(style.get("bg_treatment"), _BG_TREATMENTS["gradient"])
         words = list(power_words) or ["WATCH"]
+        if sid == "clean-subject":
+            words = list(clean_subject_words or power_words[:2])
         if sid == "price-tag":
             words = (hook_text or " ").split() or words
         try:

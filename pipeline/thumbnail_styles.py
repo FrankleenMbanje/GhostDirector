@@ -43,6 +43,13 @@ USER_TEMPLATE_DIR = config.ASSETS_DIR / "thumbnail_templates"
 # ── The curated library (rendered by thumbnail.py concept renderers) ──
 STYLES: list[dict] = [
     {
+        "id": "clean-subject", "name": "Clean Subject Portrait",
+        "text_layout": "clean_subject", "accent": "none", "bg_treatment": "none",
+        "palette": {"accent": "#FFD700", "text": "#FFFFFF"},
+        "pair_with": "named_subject", "best_for": ["documentary", "biography", "celebrity"],
+        "source": "operator-choice (clean photos; no EXCLUSIVE/news bars)",
+    },
+    {
         "id": "focal-yellow", "name": "Focal + Yellow Word",
         "text_layout": "left_stack", "accent": "yellow", "bg_treatment": "gradient",
         "palette": {"accent": "#FFE600", "text": "#FFFFFF"},
@@ -184,6 +191,7 @@ _KNOWN_LAYOUTS = {
     "vs_center",       # VS badge between two subjects
     "stamp",           # rotated stamp text (evidence board)
     "exclusive_news",  # EXCLUSIVE bar + white headline bar on a face split
+    "clean_subject",   # clean subject photo with subtle, readable text
 }
 
 

@@ -59,10 +59,19 @@ def monetization_gap(channel_stats: dict | None, rate_views_per_day: float,
     stats = channel_stats or {}
     subs = int(stats.get("subscribers") or 0)
     total_views = int(stats.get("total_views") or 0)
-    views_to_go = max(SHORTS_VIEWS_TARGET - total_views, 0)
-    required_rate = views_to_go / float(window_days)
-    eta_days = (round(views_to_go / rate_views_per_day)
-                if rate_views_per_day > 0 else None)
+    valid_views = stats.get("valid_public_shorts_views")
+    valid_hours = stats.get("valid_public_watch_hours")
+    earn = stats.get("earn_snapshot") or {}
+    if valid_hours is None:
+        valid_hours = earn.get("valid_public_watch_hours")
+    if valid_views is None:
+        valid_views = earn.get("valid_public_shorts_views")
+    views_to_go = (max(SHORTS_VIEWS_TARGET - int(valid_views), 0)
+                   if valid_views is not None else None)
+    required_rate = SHORTS_VIEWS_TARGET / float(window_days)
+    # A pace below 10M/90d never reaches a rolling 90-day bar merely by
+    # waiting longer. Lifetime channel views cannot be deducted from it.
+    eta_days = None
     return {
         "subs": subs,
         "subs_to_go": max(SUBS_TARGET - subs, 0),
@@ -71,7 +80,12 @@ def monetization_gap(channel_stats: dict | None, rate_views_per_day: float,
         "rate_views_per_day": round(rate_views_per_day, 1),
         "required_rate": round(required_rate, 1),
         "eta_days": eta_days,
-        "on_track": bool(eta_days is not None and eta_days <= window_days),
+        "watch_hours_to_go": max(4000 - float(valid_hours), 0) if valid_hours is not None else None,
+        "earn_as_of": earn.get("as_of"),
+        "shorts_views_display": earn.get("shorts_views_display"),
+        "on_track": bool(subs >= SUBS_TARGET and
+                         ((valid_views is not None and valid_views >= SHORTS_VIEWS_TARGET)
+                          or (valid_hours is not None and valid_hours >= 4000))),
     }
 
 
@@ -89,7 +103,7 @@ def diagnose(daily: dict, memory: dict | None = None,
         lines.append("WHY: nothing shipped — check Gemini quota/503 first "
                      "(output/_llm_quota_quarantine.json), then token health.")
     elif result == "PARTIAL":
-        if doc not in ("ok", "skipped"):
+        if doc not in ("ok", "skipped", "gated"):
             lines.append("WHY: the doc stage failed after its retries "
                          "(503-class). The shorts shipped so the day was kept; "
                          "the next run retries the doc on a fresh story.")
@@ -97,6 +111,16 @@ def diagnose(daily: dict, memory: dict | None = None,
             lines.append("WHY: no short shipped — treat as a failed day. The "
                          "workflow's outer retry has already fired; if it "
                          "repeats, check the story funnel (no fresh candidates?).")
+
+    # FIX-102: a gated doc is the intended outcome, not a fault — say so, or
+    # a deliberate skip reads exactly like a broken stage in the summary.
+    if doc == "gated":
+        lines.append(
+            "WHY: the long-form was GATE-SKIPPED — no breakout short to ride "
+            "(FIX-102). Docs on leftover stories ran a median 20 views with "
+            "zero engagement while the one doc sharing a 1.3k-view short's "
+            "story did 60; the gate waits for a story the audience already "
+            "chose. GD_DOC_GATE=0 allows a leftover again.")
 
     if memory:
         sh = memory.get("shorts") or {}
@@ -112,10 +136,16 @@ def diagnose(daily: dict, memory: dict | None = None,
             channel_stats or memory.get("channel_stats") or {}, rate)
         lines.append(
             f"MONETIZATION: {gap['subs_to_go']} subs to go (have "
-            f"{gap['subs']}/{SUBS_TARGET}); {gap['views_to_go']:,} views to the "
-            f"10M bar (lifetime proxy). Pace {gap['rate_views_per_day']:.0f} "
-            f"views/day → {gap['eta_days']} days at this pace; need "
-            f"{gap['required_rate']:.0f} views/day for the {WINDOW_DAYS}-day bar.")
+            f"{gap['subs']}/{SUBS_TARGET}). Valid public Shorts views (90d) "
+            f"remaining: {gap['views_to_go'] if gap['views_to_go'] is not None else 'UNKNOWN — check Studio > Earn'}; "
+            f"valid public watch-hours (12 months) remaining: "
+            f"{gap['watch_hours_to_go'] if gap['watch_hours_to_go'] is not None else 'UNKNOWN — check Studio > Earn'}. "
+            f"Recent-upload lifetime-view proxy: {gap['rate_views_per_day']:.0f}/day; "
+            f"the Shorts route needs a sustained {gap['required_rate']:.0f}/day. "
+            "No eligibility ETA can be inferred from lifetime views.")
+        if gap.get("earn_as_of"):
+            lines.append(f"EARN SNAPSHOT: {gap['earn_as_of']}; qualified Shorts views shown as "
+                         f"{gap.get('shorts_views_display') or 'unknown'}. Rounded display values are not exact view counts.")
         if not gap["on_track"]:
             lines.append(
                 "ACTION: pace is far below the 90-day bar. More uploads at the "

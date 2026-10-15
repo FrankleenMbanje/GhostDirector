@@ -1,5 +1,10 @@
 name: GhostDirector daily production
 # Cloud replacement for the retired Windows Task Scheduler entry.
+#
+# The day's slate runs as one job per video, chained in order so they share
+# the no-repeat ledger and state (daily-job.yml hands state from job to job).
+# Each video gets its own time budget and its own publish slot, so a job that
+# runs long or is cancelled can only cost that one video — never the whole day.
 
 on:
   schedule:
@@ -23,229 +28,73 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: daily-production
   cancel-in-progress: false
 
 jobs:
-  produce:
-    runs-on: ubuntu-latest
-    timeout-minutes: 350
-    steps:
-      - uses: actions/checkout@v4
+  stage-1:
+    if: ${{ (inputs.mode || 'full') != 'single_short' }}
+    uses: ./.github/workflows/daily-job.yml
+    with:
+      role: stage
+      stage: 1
+      previous_stage: 0
+      mode: ${{ inputs.mode || 'full' }}
+    secrets: inherit
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+  stage-2:
+    needs: stage-1
+    if: ${{ always() && (inputs.mode || 'full') != 'single_short' }}
+    uses: ./.github/workflows/daily-job.yml
+    with:
+      role: stage
+      stage: 2
+      previous_stage: 1
+      mode: ${{ inputs.mode || 'full' }}
+    secrets: inherit
 
-      - name: Install ffmpeg
-        run: sudo apt-get update -y && sudo apt-get install -y ffmpeg
+  stage-3:
+    needs: stage-2
+    if: ${{ always() && (inputs.mode || 'full') != 'single_short' }}
+    uses: ./.github/workflows/daily-job.yml
+    with:
+      role: stage
+      stage: 3
+      previous_stage: 2
+      mode: ${{ inputs.mode || 'full' }}
+    secrets: inherit
 
-      # FIX-071: xfade assembly holds every input's decoder + frame buffers
-      # open; even bounded passes pushed the 7 GB runner into swap-less OOM
-      # (run #5: pass 2 died silently, runner SIGTERM'd mid-render). A 4 GB
-      # swapfile turns thrash into slow-but-steady rendering.
-      - name: Add swap (OOM guard)
-        run: |
-          sudo fallocate -l 4G /mnt/swapfile
-          sudo chmod 600 /mnt/swapfile
-          sudo mkswap /mnt/swapfile
-          sudo swapon /mnt/swapfile
-          free -h
+  stage-4:
+    needs: stage-3
+    if: ${{ always() && (inputs.mode || 'full') != 'single_short' }}
+    uses: ./.github/workflows/daily-job.yml
+    with:
+      role: stage
+      stage: 4
+      previous_stage: 3
+      mode: ${{ inputs.mode || 'full' }}
+    secrets: inherit
 
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+  finalize:
+    needs: stage-4
+    if: ${{ always() && (inputs.mode || 'full') != 'single_short' }}
+    uses: ./.github/workflows/daily-job.yml
+    with:
+      role: finalize
+      stage: 0
+      previous_stage: 4
+      mode: ${{ inputs.mode || 'full' }}
+    secrets: inherit
 
-      # FIX-101: whisper_timestamped loads its silero VAD through torch.hub,
-      # whose interactive trust prompt stalls on a non-interactive runner —
-      # every cloud scene then fell back to evenly-spaced fake word timings
-      # (captions, FIX-097 callouts and punch-cut points all starved).
-      # Pre-clone with trust_repo=True so the real VAD is available; the
-      # pipeline also retries without VAD if this ever fails.
-      - name: Pre-cache Whisper VAD (silero)
-        continue-on-error: true
-        run: |
-          python - <<'PY'
-          try:
-              import torch
-              torch.hub.load("snakers4/silero-vad", "silero_vad",
-                             trust_repo=True, verbose=False)
-              print("silero VAD cached for whisper_timestamped")
-          except Exception as e:
-              print(f"silero pre-cache failed (whisper will run without VAD): {e}")
-          PY
-
-      - name: Restore production state (DB, no-repeat ledger)
-        uses: actions/cache@v4
-        with:
-          path: output/state
-          # FIX-090: the old fixed key `gd-state-v1` was saved once (2026-09-30)
-          # and never updated — cache keys are immutable, so the no-repeat
-          # ledger and experiments state silently reset on every run (the
-          # same stories could repeat, arms were forgotten). Run-scoped keys
-          # + a prefix restore keep the newest state flowing forward.
-          key: gd-state-${{ github.run_id }}
-          restore-keys: |
-            gd-state-
-
-      - name: Restore state files into live paths
-        run: |
-          mkdir -p db
-          cp -f output/state/trending_news.json db/ 2>/dev/null || true
-          cp -f output/state/experiments.json db/ 2>/dev/null || true
-          # FIX-091/092: the self-learning inputs (winner history, proven
-          # names) need the catalogue memory, not just the ledger.
-          cp -f output/state/channel_memory.json db/ 2>/dev/null || true
-          cp -f output/state/ghostdirector.db output/ 2>/dev/null || true
-
-      - name: Write secrets
-        # FIX-072: secrets must reach the shell as ENV VARS, never as direct
-        # ${{ }} interpolation inside double quotes — the JSON's own " chars
-        # terminate the shell quoting and get stripped, writing
-        # {installed: {...}} (invalid) — the exact JSONDecodeError that
-        # killed the upload step in runs #1–#6. Env values bypass shell
-        # parsing entirely; "$VAR" expansion preserves them.
-        env:
-          GD_ENV: ${{ secrets.GD_ENV }}
-          GD_CLIENT_SECRETS: ${{ secrets.GD_CLIENT_SECRETS }}
-          GD_YOUTUBE_TOKEN: ${{ secrets.GD_YOUTUBE_TOKEN }}
-        run: |
-          mkdir -p output/state
-          printf '%s' "$GD_ENV" > .env
-          printf '%s' "$GD_CLIENT_SECRETS" > client_secrets.json
-          printf '%s' "$GD_YOUTUBE_TOKEN" > youtube_token.famefiles.json
-          # Fail fast here (not 40 min in, at upload) if anything is mangled.
-          python - <<'PY'
-          import json, pathlib
-          for name in ("client_secrets.json", "youtube_token.famefiles.json"):
-              json.loads(pathlib.Path(name).read_text(encoding="utf-8"))
-              print(f"{name}: valid JSON")
-          env = pathlib.Path(".env").read_text(encoding="utf-8")
-          keys = [l.split("=", 1)[0] for l in env.splitlines() if l.strip() and not l.startswith("#")]
-          assert keys, ".env is empty"
-          print(f".env: {len(keys)} keys")
-          PY
-
-      - name: Token health check (warn-only)
-        # FIX-080: the Testing-mode OAuth app's refresh token dies ~7 days
-        # after minting (next expiry ~Oct 7). Catch it at setup with a clear
-        # warning instead of discovering it 40 min later at the upload step.
-        continue-on-error: true
-        run: |
-          python - <<'PY'
-          import json, urllib.parse, urllib.request
-          tok = json.load(open("youtube_token.famefiles.json", encoding="utf-8"))
-          data = urllib.parse.urlencode({
-              "client_id": tok["client_id"],
-              "client_secret": tok["client_secret"],
-              "refresh_token": tok["refresh_token"],
-              "grant_type": "refresh_token",
-          }).encode()
-          try:
-              r = json.load(urllib.request.urlopen(
-                  "https://oauth2.googleapis.com/token", data=data, timeout=20))
-              print("TOKEN OK - access token acquired, expires_in",
-                    r.get("expires_in"), "s")
-          except Exception as e:
-              print(f"::warning::YouTube refresh token failed ({e}) - today's "
-                    f"uploads will fail. Re-mint the token or publish the OAuth app.")
-          PY
-
-      - name: Run daily production (3 shorts + 1 doc, PUBLIC)
-        env:
-          GD_MODE: ${{ inputs.mode || 'full' }}
-          GD_SHORTS_PER_DAY: "3"
-        run: |
-          # FIX-080 (operator order 2026-10-02): every day 3 shorts + 1 doc,
-          # every upload PUBLIC. The final QC gate and the compliance gate
-          # stay the safety net; PUBLISH_QUEUE.md is the verify-and-pin list.
-          # GD_MODE=single_short: one ad-hoc short WITHOUT the daily gate
-          # (the gate would no-op a second --daily run for the same date).
-          # GD_ADHOC (FIX-082) tells the pipeline's own publish-idempotency
-          # check to stand down so the extra actually gets produced.
-          # GD_MODE=shorts_only: the full gate-managed day minus the doc.
-          case "$GD_MODE" in
-            single_short) CMD_LINE="GD_ADHOC=1 python main.py --trending --channel famefiles --privacy public";;
-            shorts_only)  CMD_LINE="GD_SHORTS_ONLY=1 python main.py --daily";;
-            *)            CMD_LINE="python main.py --daily";;
-          esac
-          echo "Mode: $GD_MODE -> $CMD_LINE"
-          # The scheduler exits 0 when the day shipped at least one video
-          # (partial days are reported in output/_daily_result.txt) and 1
-          # only when NOTHING shipped — that is the case this outer loop
-          # rescues. The daily gate makes each attempt idempotent /
-          # reclaimable.
-          # FIX-099: `${PIPESTATUS[0]}` here read EVAL's status, and eval
-          # returns the TEE's status — so a crashed production read as exit 0
-          # (run 37297238569, 2026-10-05: UnboundLocalError in the ad-hoc
-          # path, step reported success, rescue retry never fired). With
-          # pipefail + `$?` the real command status drives the loop.
-          set +e
-          set -o pipefail
-          for attempt in 1 2 3; do
-            echo "== Attempt $attempt at $(date -u +%H:%M) UTC =="
-            eval "$CMD_LINE 2>&1 | tee output/_daily.log"
-            code=$?
-            if [ "$code" -eq 0 ]; then exit 0; fi
-            echo "Attempt $attempt failed (exit $code) - cooling down 10 min"
-            sleep 600
-          done
-          exit 1
-
-      - name: Snapshot state for the next run
-        if: always()
-        run: |
-          # The no-repeat ledger (db/trending_news.json) + SQLite DB
-          # (output/ghostdirector.db) decide story freshness and daily
-          # idempotency; keep both across runs.
-          mkdir -p output/state
-          cp -f db/trending_news.json output/state/ 2>/dev/null || true
-          # FIX-086: the experiment registry must survive runs — it is the
-          # cloud's memory of which arm each video belongs to.
-          cp -f db/experiments.json output/state/ 2>/dev/null || true
-          # FIX-091/092: channel memory is the self-learning input too.
-          cp -f db/channel_memory.json output/state/ 2>/dev/null || true
-          cp -f output/ghostdirector.db output/state/ 2>/dev/null || true
-
-      - name: Upload production artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: production-${{ github.run_id }}
-          path: |
-            output/_daily.log
-            output/_daily_result.txt
-            output/_daily_intel.txt
-            output/PUBLISH_QUEUE.md
-            db/channel_memory.json
-            output/**/metadata.json
-            output/**/final_qc_report.json
-          retention-days: 7
-          if-no-files-found: ignore
-
-      - name: Job summary
-        if: always()
-        run: |
-          {
-            echo "## Daily production — $(date -u +%F)"
-            if [ -f output/_daily_result.txt ]; then
-              echo '```'
-              cat output/_daily_result.txt
-              echo '```'
-            fi
-            echo '```'
-            grep -aE "Uploaded to|Upload skipped|Error|FAILED|PARTIAL|COMPLETE|Quality gate" output/_daily.log | tail -20 || true
-            echo '```'
-            if [ -f output/PUBLISH_QUEUE.md ]; then
-              echo "## 📢 Verify + pin (videos are PUBLIC — check playback, pin the bridge comment)"
-              cat output/PUBLISH_QUEUE.md
-            fi
-            if [ -f output/_daily_intel.txt ]; then
-              echo "## 🧠 Daily intel (learning + diagnosis)"
-              head -c 6000 output/_daily_intel.txt
-              echo
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+  adhoc:
+    if: ${{ inputs.mode == 'single_short' }}
+    uses: ./.github/workflows/daily-job.yml
+    with:
+      role: adhoc
+      stage: 0
+      previous_stage: 0
+      mode: single_short
+    secrets: inherit

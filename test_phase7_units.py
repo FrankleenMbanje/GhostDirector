@@ -269,6 +269,43 @@ check("an all-blank expansion response is refused",
       _apply_expansion(short, {"scenes": [{"scene_number": i, "narration": " "}
                                            for i in range(1, 200)]}) is None)
 
+# FIX-104: a rejected script rewrite must restore original narration rather
+# than merely preserve the better numeric score while shipping worse text.
+from pipeline.quality_gate import evaluate_script_only as _eval_script104
+from models import Scene as _Scene104, Script as _Script104
+
+_rewrite_script104 = _Script104(
+    title="A documented story", description="", tags=[], hook="",
+    scenes=[_Scene104(scene_number=1,
+                      narration="Why did the merger cost $20 million?",
+                      visual_prompt="close-up of court documents",
+                      visual_type="web_photo", mood="dramatic"),
+            _Scene104(scene_number=2,
+                      narration="The reason becomes clear when the filing appears.",
+                      visual_prompt="filing document",
+                      visual_type="web_photo", mood="suspenseful"),
+            _Scene104(scene_number=3,
+                      narration="The filing changed the case completely.",
+                      visual_prompt="court filing",
+                      visual_type="web_photo", mood="neutral"),
+            _Scene104(scene_number=4,
+                      narration="That is the reason the merger mattered.",
+                      visual_prompt="boardroom photograph",
+                      visual_type="web_photo", mood="neutral")],
+    total_scenes=4, estimated_duration_minutes=0.5,
+    hook_overlay_text="THE MERGER COST")
+_orig_text104 = [s.narration for s in _rewrite_script104.scenes]
+_pre_score104 = _eval_script104(_rewrite_script104, is_short=False)["score"]
+for _scene104 in _rewrite_script104.scenes:
+    _scene104.narration = "Filler sentence. "
+_post_score104 = _eval_script104(_rewrite_script104, is_short=False)["score"]
+check("fixture has a worse rewrite score", _post_score104 < _pre_score104)
+if _post_score104 < _pre_score104:
+    for _scene104, _text104 in zip(_rewrite_script104.scenes, _orig_text104):
+        _scene104.narration = _text104
+check("rejected rewrite restores every original scene narration (FIX-104)",
+      [s.narration for s in _rewrite_script104.scenes] == _orig_text104)
+
 # ── 7.6 research depth scales with format (FIX-064) ──────────────────
 print("\n[7.6] research depth")
 from pipeline.researcher import _merge_facts, min_facts_for  # noqa: E402
@@ -401,9 +438,11 @@ try:
     p.write_text(json.dumps({"gemini-3.6-flash": ts_pre_midnight}), encoding="utf-8")
     check("429 from 5 min before PT midnight is expired (bucket refilled)",
           not _is_quarantined_today("gemini-3.6-flash"))
+    simulated_noon_pt = midnight_pt + 12 * 3600
     check("UTC-date logic would wrongly keep that 429 locked (the run #4 bug)",
           datetime.fromtimestamp(ts_pre_midnight, tz=timezone.utc).date()
-          == datetime.now(tz=timezone.utc).date())
+          == datetime.fromtimestamp(simulated_noon_pt, tz=timezone.utc).date())
+
     p.write_text(json.dumps({"gemini-3.6-flash": _time.time() - 25 * 3600}), encoding="utf-8")
     check("a 429 earned 25 h ago never quarantines today",
           not _is_quarantined_today("gemini-3.6-flash"))
@@ -467,7 +506,12 @@ try:
                             packaged_title="Taylor Swift Just Ended This Feud")
     TN.append_publish_queue("Taylor Swift feud story", "longform", "doc456XYZ")
     q = TN._QUEUE_PATH.read_text(encoding="utf-8")
-    check("queue header written", "PUBLISH QUEUE" in q and "publish-by" in q)
+    check("queue header written", "PUBLISH QUEUE" in q and "publish / verify-by" in q)
+    TN.append_publish_queue("Taylor Swift feud story", "short", "sched789XYZ",
+                            publish_at="2026-10-10T07:00:00Z")
+    q = TN._QUEUE_PATH.read_text(encoding="utf-8")
+    check("queue shows scheduled publication time",
+          "Scheduled 2026-10-10T07:00:00Z" in q)
     check("queue row has Studio link + deadline", "studio.youtube.com/video/abc123XYZ/edit" in q)
     check("queue marks doc rows as 8-min", "8-min doc" in q)
     check("queue row references bridge pinning", "bridge comment" in q)
@@ -534,7 +578,9 @@ for _k in _saved_env:
 try:
     _stages = _sched._build_stages("famefiles")
     check("daily slate = 3 shorts + 1 doc", len(_stages) == 4)
-    check("every stage uploads public", all("public" in s for s in _stages))
+    check("daily publish slots are one morning, one afternoon, two evening",
+          _sched.DAILY_RELEASE_SLOTS == ((9, 0), (14, 0), (18, 0), (20, 0)))
+    check("every stage uploads public by default", all("public" in s for s in _stages))
     check("doc stage is last", "--longform" in _stages[-1] and
           all("--longform" not in s for s in _stages[:3]))
     check("all stages carry the channel", all("famefiles" in s for s in _stages))
@@ -571,22 +617,101 @@ finally:
         else:
             os.environ[_k] = _v
 
+# UTC publication schedule: daily slots in Harare time, including next-day
+# rollover after the 08:30 UTC workflow starts.
+from datetime import datetime as _dt_sched, timezone as _tz_sched
+
+_times_early = _sched._daily_publish_times(
+    4, _dt_sched(2026, 10, 9, 6, 0, tzinfo=_tz_sched.utc))
+_times_late = _sched._daily_publish_times(
+    4, _dt_sched(2026, 10, 9, 10, 0, tzinfo=_tz_sched.utc))
+_times_midmorning = _sched._daily_publish_times(
+    4, _dt_sched(2026, 10, 9, 5, 30, tzinfo=_tz_sched.utc))
+_times_three_fit = _sched._daily_publish_times(
+    3, _dt_sched(2026, 10, 9, 5, 30, tzinfo=_tz_sched.utc))
+_times_two_fit = _sched._daily_publish_times(
+    2, _dt_sched(2026, 10, 9, 5, 30, tzinfo=_tz_sched.utc))
+check("four daily publication timestamps returned",
+      len(_times_early) == 4)
+check("four slots map to 09:00, 14:00, 18:00, 20:00 Harare",
+      [ _dt_sched.fromisoformat(t.replace("Z", "+00:00")).astimezone(_sched.HARARE).strftime("%H:%M")
+        for t in _times_early] == ["09:00", "14:00", "18:00", "20:00"])
+check("a full four-video slate rolls together when morning slot passed",
+      [_dt_sched.fromisoformat(t.replace("Z", "+00:00")).astimezone(_sched.HARARE).date().isoformat()
+       for t in _times_late] == ["2026-10-10"] * 4)
+check("a four-video slate rolls together if only three slots remain after headroom",
+      [_dt_sched.fromisoformat(t.replace("Z", "+00:00")).astimezone(_sched.HARARE).strftime("%Y-%m-%d %H:%M")
+       for t in _times_midmorning] == ["2026-10-10 09:00", "2026-10-10 14:00",
+                                        "2026-10-10 18:00", "2026-10-10 20:00"])
+check("three videos still fit from 07:30 Harare into afternoon/evening slots",
+      [_dt_sched.fromisoformat(t.replace("Z", "+00:00")).astimezone(_sched.HARARE).strftime("%H:%M")
+       for t in _times_three_fit] == ["14:00", "18:00", "20:00"])
+check("two videos still fit from 07:30 Harare into afternoon slots",
+      [_dt_sched.fromisoformat(t.replace("Z", "+00:00")).astimezone(_sched.HARARE).strftime("%H:%M")
+       for t in _times_two_fit] == ["14:00", "18:00"])
+check("publish times are strictly future UTC",
+      all(_dt_sched.fromisoformat(t.replace("Z", "+00:00")) >
+          _dt_sched(2026, 10, 9, 10, 0, tzinfo=_tz_sched.utc)
+          for t in _times_late))
+check("non-positive schedule count yields no timestamps",
+      _sched._daily_publish_times(0, _dt_sched(2026, 10, 9, tzinfo=_tz_sched.utc)) == [])
+
 # public by default: CLI, uploader, metadata
 import main as _main_mod
 _privacy_opt = next(p for p in _main_mod.main.params if p.name == "privacy")
 check("CLI --privacy defaults to public", _privacy_opt.default == "public")
 check("upload_video defaults to public",
       inspect.signature(_uv).parameters["privacy_status"].default == "public")
+check("uploader supports scheduled publish times",
+      "publish_at" in inspect.signature(_uv).parameters)
+_uploader_src = inspect.getsource(_uv)
+check("scheduled uploads are private with YouTube publishAt",
+      '"privacyStatus": effective_privacy' in _uploader_src
+      and 'body["status"]["publishAt"] = scheduled_at' in _uploader_src)
+_uploader_mod = __import__("pipeline.uploader", fromlist=["_scheduled_upload_status"])
+_check_schedule = _uploader_mod._scheduled_upload_status
+_future_publish_at = (_dt_sched.now(_tz_sched.utc)
+                      + _dt_sched.resolution * 86400000000
+                      ).isoformat().replace("+00:00", "Z")
+import unittest.mock as _mock_sched
+with _mock_sched.patch.dict(os.environ, {"GD_PUBLISH_AT": _future_publish_at}):
+    check("scheduled upload preserves explicit empty override over environment",
+          _check_schedule("unlisted", "") == ("unlisted", None))
+check("scheduled upload status forces private",
+      _check_schedule("public", _future_publish_at) == ("private", _future_publish_at))
+check("unscheduled upload preserves requested privacy",
+      _check_schedule("unlisted", None) == ("unlisted", None))
+for _invalid_schedule in ("not-a-date", "2026-01-01T00:00:00", "2000-01-01T00:00:00Z"):
+    try:
+        _check_schedule("public", _invalid_schedule)
+        _schedule_rejected = False
+    except ValueError:
+        _schedule_rejected = True
+    check(f"invalid/past schedule rejected: {_invalid_schedule}", _schedule_rejected)
+check("post-processing privacy repair preserves scheduled publishAt",
+      'status_body["publishAt"] = publish_at' in inspect.getsource(
+          __import__("pipeline.uploader", fromlist=["_reassert_after_processing"])
+          ._reassert_after_processing))
+check("idempotency checks the scheduled release time",
+      "schedule_matches" in _uploader_src and
+      "_existing_upload_matches_schedule" in _uploader_src)
+check("thumbnail default remains public unless scheduled",
+      "actual_visibility" in (Path(__file__).parent / "pipeline" / "trending_short.py").read_text(encoding="utf-8"))
+check("uploader supports scheduled publish times",
+      "publish_at" in inspect.signature(_uv).parameters)
+check("scheduled queue labels carry publication time",
+      "Scheduled {publish_at}" in inspect.getsource(TN.append_publish_queue))
 check("metadata records public privacy",
       '"privacy_status": "public"' in (Path(__file__).parent / "pipeline" / "metadata.py").read_text(encoding="utf-8"))
 
 # workflow: public ad-hoc path, 3-shorts env, shorts_only mode, result artifact
-_wf = (Path(__file__).parent / ".github" / "workflows" / "daily.yml").read_text(encoding="utf-8")
+_wf = "\n".join((Path(__file__).parent / ".github" / "workflows" / _n).read_text(encoding="utf-8")
+                 for _n in ("daily.yml", "daily-job.yml"))  # one job per video
 check("workflow ad-hoc short path is public", "--privacy public" in _wf)
 check("workflow pins 3 shorts/day", "GD_SHORTS_PER_DAY" in _wf)
 check("workflow offers shorts_only mode", "shorts_only" in _wf)
 check("workflow surfaces _daily_result.txt", "_daily_result.txt" in _wf)
-check("publish queue now says PUBLIC", "PUBLIC" in inspect.getsource(TN.append_publish_queue))
+check("publish queue supports scheduled times", "publish_at" in inspect.signature(TN.append_publish_queue).parameters)
 
 # ── 7.13 upload verification + duration-aware idempotency (FIX-081) ──
 print("\n[7.13] upload verification (FIX-081)")
@@ -696,9 +821,9 @@ check("daily result parser tolerates junk", DG.parse_daily_result("garbage") == 
 
 _gap = DG.monetization_gap({"subscribers": 11, "total_views": 6641}, 500.0)
 check("gap counts subs to go", _gap["subs_to_go"] == 989)
-check("gap counts views to go", _gap["views_to_go"] == 10_000_000 - 6641)
+check("gap does not count lifetime views toward rolling eligibility", _gap["views_to_go"] is None)
 check("gap computes required pace", _gap["required_rate"] > 100_000)
-check("gap ETA at pace", _gap["eta_days"] == round((10_000_000 - 6641) / 500.0))
+check("gap does not invent a lifetime-view ETA", _gap["eta_days"] is None)
 check("gap flags off-track", _gap["on_track"] is False)
 
 _lines = DG.diagnose(
@@ -719,6 +844,78 @@ check("scheduler runs daily intel",
       "_run_intel" in _sched_src2 and "_daily_intel.txt" in _sched_src2)
 check("workflow surfaces the intel report", "_daily_intel.txt" in _wf)
 
+# FIX-104: quality gate admits delivery only at the documented ship score.
+from pipeline.quality_gate import quality_gate_allows_delivery as _qga104
+check("quality gate permits explicit >=8 ship results", _qga104({"verdict": "ship", "score": 8.0}))
+for _gate104 in ({"verdict": "fix", "score": 7.9},
+                  {"verdict": "redo", "score": 5.9},
+                  {"verdict": "ship", "score": 7.9}, {}):
+    check("quality gate blocks every non-ship/below-threshold result",
+          not _qga104(_gate104), str(_gate104))
+
+from pipeline.quality_gate import (  # noqa: E402
+    _score_edit as _score_edit104, longform_runtime_issue as _runtime_issue104,
+)
+from models import Script as _Script104, Scene as _Scene104  # noqa: E402
+
+_scene104 = _Scene104(scene_number=1, narration="A specific line with a number 42.",
+                      visual_prompt="portrait", visual_type="web_photo",
+                      mood="dramatic", duration_target_seconds=9.0,
+                      sfx_cue="whoosh")
+_script104 = _Script104(title="Test", description="", tags=[], hook="",
+                        scenes=[_Scene104(
+                            scene_number=i, narration=_scene104.narration,
+                            visual_prompt=_scene104.visual_prompt,
+                            visual_type=_scene104.visual_type, mood=_scene104.mood,
+                            duration_target_seconds=9.0, sfx_cue="whoosh")
+                                for i in range(1, 11)],
+                        total_scenes=10, estimated_duration_minutes=1.0)
+_tl104 = TMP / "edit_cadence104"
+_tl104.mkdir(exist_ok=True)
+_script_mixed104 = _Script104(
+    title="Mixed edit", description="", tags=[], hook="",
+    scenes=[_Scene104(scene_number=i, narration="line", visual_prompt="p",
+                      visual_type="web_photo", mood="neutral",
+                      duration_target_seconds=9.0, sfx_cue="whoosh")
+            for i in range(1, 3)],
+    total_scenes=2, estimated_duration_minutes=0.3)
+(_tl104 / "timeline.json").write_text(json.dumps({"scenes": [
+    {"scene_number": 1, "duration_seconds": 9.0, "cuts": [
+        {"duration_seconds": 2.0}, {"duration_seconds": 2.5},
+        {"duration_seconds": 2.0}, {"duration_seconds": 2.5}]},
+    {"scene_number": 2, "duration_seconds": 9.0, "cuts": []},
+]}), encoding="utf-8")
+_score_mixed104, _issues_mixed104 = _score_edit104(_tl104, _script_mixed104, True)
+check("mixed edit cadence includes the uncut 9s scene in its average",
+      any("Average shot length too slow" in issue for issue in _issues_mixed104),
+      str(_issues_mixed104))
+(_tl104 / "timeline.json").write_text(json.dumps({"scenes": [
+    {"scene_number": i, "duration_seconds": 9.0, "cuts": [
+        {"duration_seconds": 2.0}, {"duration_seconds": 2.5},
+        {"duration_seconds": 2.0}, {"duration_seconds": 2.5}]}
+    for i in range(1, 11)]}), encoding="utf-8")
+_score_with_cuts104, _issues_with_cuts104 = _score_edit104(_tl104, _script104, True)
+check("edit cadence scores actual sub-3s cut segments, not narration scene duration",
+      not any("Average" in issue or "Too many >4s" in issue
+              for issue in _issues_with_cuts104), str(_issues_with_cuts104))
+(_tl104 / "timeline.json").write_text(json.dumps({"scenes": [
+    {"scene_number": 1, "duration_seconds": 9.0, "cuts": [
+        {"duration_seconds": 2.0}, {"duration_seconds": 2.5}]}
+]}), encoding="utf-8")
+_score_partial104, _issues_partial104 = _score_edit104(_tl104, _script104, True)
+check("partial edit manifest falls back to durations for missing scenes",
+      any("Average shot length too slow" in issue for issue in _issues_partial104),
+      str(_issues_partial104))
+(_tl104 / "timeline.json").unlink()
+_score_without_cuts104, _issues_without_cuts104 = _score_edit104(_tl104, _script104, True)
+check("without measured cuts, long scene beats are still flagged for review",
+      any("Average scene duration too slow" in issue for issue in _issues_without_cuts104),
+      str(_issues_without_cuts104))
+check("8-minute documentary needs at least 480 seconds",
+      _runtime_issue104(479.9, 8) is not None and _runtime_issue104(480, 8) is None)
+check("runtime floor does not incorrectly apply to shorter formats",
+      _runtime_issue104(60, 4) is None)
+
 # ── 7.16 real-audio hook intro (FIX-085) ────────────────────────────
 print("\n[7.16] real-audio hook intro (FIX-085)")
 from pipeline.trending_short import hook_query_for as _hqf
@@ -736,6 +933,10 @@ check("hook splice = stream copy + re-encode fallback",
       "prepend_hook_intro" in _ff_src and "veryfast" in _ff_src)
 check("hook failure never costs the video",
       "shipping without the hook" in _ff_src)
+_trend_hook104 = (Path(__file__).parent / "pipeline" / "trending_short.py").read_text(encoding="utf-8")
+check("hooked version is re-QC'd with fallback to the already checked base video",
+      "_hook_qc_gate" in _trend_hook104
+      and "falling back to the checked base Short" in _trend_hook104)
 
 # Real-ffmpeg integration: normalize + copy-concat preserves both streams
 import subprocess as _subp
@@ -760,6 +961,10 @@ _mk(_hook, 440, 0.6)
 _mk(_main, 880, 0.8)
 from utils.ffmpeg_cmd import prepend_hook_intro as _pre, get_duration as _gd
 _out = _pre(_hook, _main)
+_trend_src104 = (Path(__file__).parent / "pipeline" / "trending_short.py").read_text(encoding="utf-8")
+check("spliced hook artifact is re-QC'd and falls back to base render on failure",
+      "_hook_qc_gate" in _trend_src104
+      and "falling back to the checked base Short" in _trend_src104)
 check("splice produces a new file", Path(_out) != Path(_main) and Path(_out).exists())
 check("splice duration = hook + main",
       abs(_gd(_out) - (_gd(_hook) + _gd(_main))) < 0.35)
@@ -990,6 +1195,7 @@ _f91_strong = [
     _f91_row("s6", "Blake Lively Follows Taylor Swift", 1355),
 ]
 _w91 = _bs91(_f91_strong, now=_f91_now)
+
 check("breakout picks the top recent short", bool(_w91) and _w91["id"] == "w1")
 check("breakout refuses a weak week (absolute floor)",
       _bs91([_f91_row(f"x{i}", f"Story number {i}", 300) for i in range(6)],
@@ -1413,6 +1619,22 @@ check("callout event lands on the timeline with fade + alignment override",
 check("callouts are opt-out-able and wired into the caption pass",
       "GD_CALLOUTS" in _asm94 and "callouts=callouts" in _asm94)
 
+# FIX-104: a failed or unavailable QC probe never reports delivery success.
+from main import _checked_final_qc as _checked_qc104
+check("shared final QC helper allows explicit pass",
+      _checked_qc104(lambda *_a, **_k: (Path("valid.mp4"), True, []),
+                     Path("valid.mp4"))[1])
+for _bad_qc104 in (
+    lambda *_a, **_k: (Path("bad.mp4"), False, ["bad frame"]),
+    lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("probe unavailable")),
+):
+    try:
+        _checked_qc104(_bad_qc104, Path("bad.mp4"))
+        _qc_rejected104 = False
+    except RuntimeError:
+        _qc_rejected104 = True
+    check("failed or unavailable QC blocks delivery", _qc_rejected104)
+
 # ── 7.25 QC samples stay inside the exported render (FIX-098) ──────────
 print("\n[7.25] QC never probes past the exported end (FIX-098)")
 _qc98 = TMP / "qc98"
@@ -1439,6 +1661,23 @@ check("scene-map tail past the render end is not 'undecodable' (FIX-098)",
       not any("undecodable" in i for i in _issues98),
       [i for i in _issues98 if "undecodable" in i][:1])
 
+# FIX-104: delivery QC must fail closed when the gate errors or rejects.
+from main import _checked_final_qc as _checked_qc104
+
+check("QC pass tuple is returned", _checked_qc104(
+    lambda *_a, **_k: (Path("valid.mp4"), True, []),
+    Path("valid.mp4"))[1] is True)
+for _bad_qc104 in (
+    lambda *_a, **_k: (Path("bad.mp4"), False, ["bad frame"]),
+    lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("probe unavailable")),
+):
+    try:
+        _checked_qc104(_bad_qc104, Path("bad.mp4"))
+        _rejected_qc104 = False
+    except RuntimeError:
+        _rejected_qc104 = True
+    check("failed or unavailable QC blocks delivery (FIX-104)", _rejected_qc104)
+
 # ── 7.26 ad-hoc extras survive the daily lock; failures visible (FIX-099) ──
 print("\n[7.26] ad-hoc extras + workflow failure detection (FIX-099)")
 _ts99 = (Path(__file__).parent / "pipeline" / "trending_short.py").read_text(
@@ -1449,8 +1688,7 @@ _i_adhoc99 = _ts99.find("Ad-hoc extra")
 check("say() is defined before the daily-skip / ad-hoc branches call it (FIX-099)",
       -1 < _i_say99 < _i_dup99 and -1 < _i_say99 < _i_adhoc99,
       f"say={_i_say99} dup={_i_dup99} adhoc={_i_adhoc99}")
-_wf99 = (Path(__file__).parent / ".github" / "workflows" / "daily.yml").read_text(
-    encoding="utf-8")
+_wf99 = _wf  # FIX-099 checks read the same workflow text (both files)
 check("workflow retry reads the real exit code (pipefail + $?, not PIPESTATUS)",
       "set -o pipefail" in _wf99 and "code=$?" in _wf99
       and "code=${PIPESTATUS" not in _wf99)
@@ -1565,6 +1803,105 @@ check("GD_WHISPER_VAD=0 disables VAD up front (FIX-101)",
 check("workflow pre-caches silero with trust_repo (FIX-101)",
       "silero-vad" in _wf99 and "trust_repo=True" in _wf99)
 _ts101._vad_down = False
+
+# ── 7.29 long-form hard gate: ride a breakout or don't ship (FIX-102) ──
+print("\n[7.29] long-form hard gate: ride a breakout or don't ship (FIX-102)")
+from pipeline.quality_gate import longform_runtime_issue as _runtime_issue102
+check("8-minute doc runtime below 480s is a blocker",
+      _runtime_issue102(479.0, 8) is not None)
+check("doc runtime at or above target is accepted",
+      _runtime_issue102(480.0, 8) is None)
+import pipeline.trending_short as _TS102  # noqa: E402
+from storage import scheduler as _SCH102  # noqa: E402
+
+_win102 = {"id": "w1", "title": "Kim Kardashian North West School", "views": 7384}
+check("doc rides when the feed still carries the breakout story",
+      _TS102._doc_gate_decision(_win102, True, True) == "ride")
+check("doc is GATED when the breakout story has left the feed",
+      _TS102._doc_gate_decision(_win102, False, True) == "gate")
+check("doc is GATED when no short broke out at all",
+      _TS102._doc_gate_decision(None, False, True) == "gate")
+check("GD_DOC_GATE=0 restores the leftover auto-pick",
+      _TS102._doc_gate_decision(None, False, False) == "leftover")
+check("GD_DOC_GATE=0 + GD_RIDE_WINNER=0 allows a leftover",
+      _TS102._doc_gate_decision(None, False, False, riding_on=False) == "leftover")
+check("GD_DOC_GATE=0 still rides a matched story when riding is on",
+      _TS102._doc_gate_decision(_win102, True, False, riding_on=True) == "ride")
+check("a matching ride still wins with the gate off",
+      _TS102._doc_gate_decision(_win102, True, False) == "ride")
+check("gate reason names the missing breakout bar",
+      "breakout bar" in _TS102._doc_gate_reason(None))
+check("gate reason quotes the unmatched breakout and its views",
+      "7384" in _TS102._doc_gate_reason(_win102)
+      and "Kim Kardashian" in _TS102._doc_gate_reason(_win102))
+
+# the gate is only as good as the ride detection it guards: a feed that
+# quotes a phrase must still match the breakout short it came from.
+check("a quoted headline still matches its own breakout (FIX-102 tokenizer)",
+      _TS102._winner_candidate(
+          [{"title": "Kim Kardashian says she has to 'hold back' North, 13, "
+                     "from some projects"}],
+          "Kim Kardashian says she has to hold back North") is not None)
+check("interior apostrophes survive tokenization",
+      "don't" in _TS102._winner_tokens("Drake don't care at all"),
+      str(sorted(_TS102._winner_tokens("Drake don't care at all"))))
+check("a different story about the same person is still refused",
+      _TS102._winner_candidate([{"title": "Drake Announces World Tour Dates"}],
+                               "Drake and Karol G Reunite on Stage") is None)
+
+_prev102 = _os94.environ.get("GD_DOC_GATE")
+try:
+    _os94.environ.pop("GD_DOC_GATE", None)
+    check("the gate is ON by default", _TS102._doc_gate_enabled())
+    for _v102 in ("0", "false", "no"):
+        _os94.environ["GD_DOC_GATE"] = _v102
+        check(f"GD_DOC_GATE={_v102} disables the gate",
+              not _TS102._doc_gate_enabled())
+finally:
+    if _prev102 is None:
+        _os94.environ.pop("GD_DOC_GATE", None)
+    else:
+        _os94.environ["GD_DOC_GATE"] = _prev102
+
+# the marker file is the cross-process signal the scheduler reads back
+_cwd102 = Path.cwd()
+_tmp102 = TMP / "gate102"
+_tmp102.mkdir(exist_ok=True)
+try:
+    _os94.chdir(_tmp102)
+    _TS102._write_doc_gate_skip("test reason")
+    _mk102 = Path("output") / "_doc_gated.txt"
+    check("a gate skip leaves the marker for the scheduler",
+          _mk102.exists() and _mk102.read_text(encoding="utf-8") == "test reason")
+finally:
+    _os94.chdir(_cwd102)
+
+check("a gated doc reads as gated, not failed",
+      _SCH102._doc_state([True], "some reason") == "gated")
+check("an ungated success still reads ok", _SCH102._doc_state([True], "") == "ok")
+check("a genuinely failed doc still reads failed",
+      _SCH102._doc_state([False], "") == "failed")
+check("no doc stage at all reads skipped", _SCH102._doc_state([], "") == "skipped")
+check("a stale marker never excuses a real failure",
+      _SCH102._doc_state([False], "stale") == "failed")
+
+_ts102_src = (Path(__file__).parent / "pipeline" / "trending_short.py").read_text(
+    encoding="utf-8")
+check("trending upload blocks FIX/REDO quality-gate results",
+      "quality_gate_allows_delivery" in _ts102_src
+      and '"reason": "quality_gate_below_ship_threshold"' in _ts102_src)
+check("the gate returns SKIPPED-ok before the leftover auto-pick",
+      '"reason": "doc_gate_no_breakout"' in _ts102_src
+      and '"ok": True, "skipped": True' in _ts102_src)
+check("the ride block is driven by the tested decision helper",
+      "_doc_gate_decision(" in _ts102_src)
+check("docs below the configured runtime floor are skipped before packaging/upload",
+      "longform_runtime_below_target" in _ts102_src
+      and "longform_runtime_issue" in _ts102_src)
+_dg102_src = (Path(__file__).parent / "pipeline" / "diagnose.py").read_text(
+    encoding="utf-8")
+check("diagnosis explains a gated doc as intentional",
+      "GATE-SKIPPED" in _dg102_src and '"gated"' in _dg102_src)
 
 print(f"\n{'='*50}\nRESULT: {sum(1 for _, ok, _ in RESULTS if ok)} passed, "
       f"{sum(1 for _, ok, _ in RESULTS if not ok)} failed")

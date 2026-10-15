@@ -866,12 +866,15 @@ def final_qc(
             issues.append(f"QC: resolution {w}x{h} != expected {expected_size[0]}x{expected_size[1]}")
         if dur < 5.0:
             issues.append(f"QC: render suspiciously short ({dur:.1f}s)")
-        # FIX-060 enforcement point: vertical (9:16) renders must fit the
-        # Shorts limit — check the EXPORTED file, not the script estimate.
+        # FIX-060: for this channel's 60s-format shorts the exported render,
+        # not the script estimate, is the contract. YouTube itself accepts up
+        # to 180s Shorts since 2024, but this pipeline intentionally targets a
+        # tighter <=59.5s editorial format; the message does not misstate YT's
+        # upload limit.
         if expected_size and expected_size[1] > expected_size[0] and dur > 59.5:
             issues.append(
-                f"QC: CRITICAL shorts duration {dur:.1f}s exceeds the 60s "
-                f"limit — trim/re-render, upload would be non-compliant")
+                f"QC: CRITICAL short-format duration {dur:.1f}s exceeds this "
+                f"pipeline's 59.5s target — trim/re-render before delivery")
 
         if expected_size:
             exp_ar = expected_size[0] / expected_size[1]
@@ -1164,6 +1167,20 @@ def final_qc(
             except Exception:
                 log.info("  QC: mid-silence probe failed (skipped)")
 
+        if project_dir and (Path(project_dir) / "timeline.json").exists():
+            timeline = json.loads((Path(project_dir) / "timeline.json").read_text(encoding="utf-8"))
+            planned_end = max((float(sc.get("start_seconds", 0)) + float(sc.get("duration_seconds", 0))
+                               for sc in timeline.get("scenes", [])), default=0)
+            if dur + 0.5 < planned_end:
+                issues.append(f"QC: CRITICAL narration truncated — export ends at {dur:.2f}s "
+                              f"but planned narration ends at {planned_end:.2f}s")
+            max_hold = 4.0 if h > w else 6.0
+            for sc in timeline.get("scenes", []):
+                holds = [float(c.get("duration_seconds", 0)) for c in sc.get("cuts", [])]
+                holds = holds or [float(sc.get("duration_seconds", 0))]
+                if max(holds, default=0) > max_hold + 0.15:
+                    issues.append(f"QC: CRITICAL edit cadence — scene {sc.get('scene_number')} "
+                                  f"holds {max(holds):.1f}s (limit {max_hold:.0f}s); rebuild picture cuts")
         ok = not issues
         if report_dir:
             try:
@@ -1205,8 +1222,10 @@ def final_qc(
 CRITICAL_PATTERNS = (
     "no video stream", "resolution", "aspect ratio", "NO audio",
     "suspiciously short", "undecodable", "crashed", "CRITICAL flat/blank",
-    "rendering failure", "CRITICAL shorts duration", "dead-air tail",
+    "rendering failure", "CRITICAL short-format duration", "dead-air tail",
     "mid-video silence",
+    "CRITICAL edit cadence", "FALLBACK_USED", "visually unfinished", "frame review:",
+    "CRITICAL narration truncated",
 )
 
 
@@ -1355,7 +1374,7 @@ def qc_gate(
             rebuilt = None
         if rebuilt and Path(rebuilt).exists():
             ok2, issues2 = final_qc(Path(rebuilt), expected_size, report_dir, project_dir=project_dir,
-                                    deep_review=False)
+                                    deep_review=True)
             crit2, warn2 = classify_qc(issues2)
             unfinished2 = [i for i in issues2 if "visually unfinished" in i
                            or "FALLBACK_USED" in i or "frame review:" in i]
