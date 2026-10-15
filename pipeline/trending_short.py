@@ -173,6 +173,10 @@ def _override_metadata(meta: dict, script: Script, story: dict,
     if src and src.lower() not in ("ddg", "google news"):
         lines += ["", f"Source: {src}"]
 
+    if meta.get('media_policy') == 'licensed_subjects':
+        # Packaging must retain required credits from the media manifest.
+        lines += ['', meta.get('media_credits') or '']
+
     tags = list(dict.fromkeys((meta.get("tags") or []) + (
         ["celebrity news", "trending", "entertainment news", "news today"]
         + (["rise and fall", "documentary", "empire", "downfall", "rise and ruin"]
@@ -184,6 +188,7 @@ def _override_metadata(meta: dict, script: Script, story: dict,
     )))[:25]
 
     return {
+        **meta,
         "title": title,
         "description": "\n".join(lines).strip(),
         "tags": tags,
@@ -768,7 +773,8 @@ async def run_trending_short(
         # clip's OWN audio, ~3 seconds in front of the short (operator's edit-
         # language ask). Normalized + spliced as a stream copy; any failure
         # ships the un-hooked render instead. Shorts only; vertical only.
-        if _is_vertical and hook_mode == "on":
+        if (_is_vertical and hook_mode == "on"
+                and template.get('visuals', {}).get('media_policy') != 'licensed_subjects'):
             _base_short = Path(final_video)
             try:
                 hq = hook_query_for((story or {}).get("title") or script.title or "")

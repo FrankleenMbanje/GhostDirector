@@ -50,6 +50,7 @@
     "use_speaker_boost": true
   },
   "visuals": {
+    "media_policy": "licensed_subjects",
     "resolution": "1920x1080",
     "fps": 30,
     "aspect_ratio": "16:9",

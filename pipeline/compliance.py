@@ -114,6 +114,12 @@ def check_compliance(
     chapters = metadata.get("chapters") or []
     checklist = metadata.get("checklist") or {}
 
+    if metadata.get('media_policy') == 'licensed_subjects':
+        from pipeline.licensed_media import rights_issues
+        for issue in rights_issues(script, output_dir, description):
+            _add('media.reuse_rights', 'fail', issue,
+                 'Use verified subject media with complete license credits')
+
     # ── 1. Metadata spam policies ──────────────────────────────────────
     if not title:
         _add("metadata.title", "fail", "Title is empty", "Set a title in metadata.json")

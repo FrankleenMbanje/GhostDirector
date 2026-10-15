@@ -187,16 +187,26 @@ def generate_metadata(
     if credits:
         credits_text = (
             "\n🎬 FOOTAGE & IMAGE CREDITS\n"
-            "Short excerpts of third-party material are used for commentary and\n"
-            "criticism under fair use. Sources:\n"
+            "Sources (credit alone does not establish permission):\n"
             + "\n".join(credits[:20])
             + ("\n" if len(credits) > 20 else "")
         )
         if len(credits) > 20:
             credits_text += f"(+{len(credits) - 20} more)\n"
 
+    media_policy = template.get('visuals', {}).get('media_policy', '')
+    if media_policy == 'licensed_subjects':
+        from pipeline.licensed_media import credit
+        manifest = json.loads((output_dir / 'media_rights.json').read_text(encoding='utf-8'))
+        if not manifest.get('complete'):
+            raise RuntimeError('Celebrity media rights package is incomplete')
+        records = list({r['source_page']: r for r in manifest['assets']}.values())
+        # License credits are required: never silently truncate them to fit.
+        credits_text = '\nFOOTAGE & IMAGE LICENSES\n' + '\n\n'.join(credit(r) for r in records) + '\n'
+
     # FIX-048: plain section labels instead of ━ divider bars — the 26-char
     # heavy-line runs tripped the repeated-character spam check on every video.
+    stock_credit = '' if media_policy == 'licensed_subjects' else 'Stock footage provided by Pexels (pexels.com).'
     description = f"""
 {script.description}
 
@@ -211,7 +221,7 @@ Content is for educational and entertainment purposes only.
 Events involving legal allegations are presented as reported by
 public sources; nothing here is a statement of guilt.
 
-Stock footage provided by Pexels (pexels.com).
+{stock_credit}
 Background music is royalty-free.
 """
 
@@ -223,6 +233,8 @@ Background music is royalty-free.
 
     # ── Build metadata ──
     metadata = {
+        "media_policy": media_policy,
+        "media_credits": credits_text if media_policy == 'licensed_subjects' else '',
         "title": title_variants[0] if title_variants else script.title,
         "title_variants": title_variants,
         "description": description.strip(),
