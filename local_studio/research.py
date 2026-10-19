@@ -4,6 +4,9 @@ import hashlib
 import json
 import re
 from datetime import datetime, timezone, timedelta
+from email.utils import parsedate_to_datetime
+from concurrent.futures import ThreadPoolExecutor
+import xml.etree.ElementTree as ET
 from urllib.parse import urlparse
 
 import requests
@@ -13,6 +16,32 @@ from ddgs import DDGS
 from .common import LOG, QualityBlocked, now, save, settings
 
 NEWS_DOMAINS = {'apnews.com', 'reuters.com', 'bbc.com', 'bbc.co.uk', 'abcnews.com', 'abcnews.go.com', 'nbcnews.com', 'cbsnews.com', 'cnn.com', 'people.com', 'variety.com', 'hollywoodreporter.com', 'billboard.com', 'ew.com', 'deadline.com', 'rollingstone.com', 'theguardian.com', 'cnbc.com', 'npr.org', 'bop.gov', 'justice.gov'}
+
+NEWS_FEEDS = ['https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml',
+              'https://variety.com/feed/', 'https://deadline.com/feed/',
+              'https://www.billboard.com/feed/', 'https://www.rollingstone.com/feed/',
+              'https://www.theguardian.com/culture/rss']
+
+
+def feed_news(url):
+    """Publisher RSS fallback when search providers throttle or return undated news."""
+    found=[]
+    try:
+        response=requests.get(url,timeout=(10,20),headers={'User-Agent':'FameFilesLocalStudio/1.0 (news research)'})
+        response.raise_for_status()
+        if len(response.content)>3_000_000:return []
+        root=ET.fromstring(response.content)
+        for item in root.findall('.//item'):
+            link=item.findtext('link','').strip()
+            try:date=parsedate_to_datetime(item.findtext('pubDate','')).isoformat()
+            except (TypeError,ValueError,IndexError):continue
+            title=item.findtext('title','').strip()
+            if allowed(link) and fresh(date) and title:
+                found.append({'title':title,'url':link,'date':date,'summary':BeautifulSoup(item.findtext('description',''),'html.parser').get_text(' ',strip=True)[:300]})
+            if len(found)>=12:break
+    except (requests.RequestException,ET.ParseError):
+        LOG.warning('Publisher feed unavailable: %s',urlparse(url).hostname)
+    return found
 
 
 def domain(url):
@@ -52,6 +81,17 @@ def discover(ai, excluded: list[str]) -> list[dict]:
                     seen.add(url)
         except Exception as error:
             LOG.warning('News discovery query failed: %s', type(error).__name__)
+    if len(results)<12:
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            feeds=list(pool.map(feed_news,NEWS_FEEDS))
+        # Interleave publishers so a single large feed cannot fill the context.
+        for index in range(12):
+            for feed in feeds:
+                if index<len(feed) and feed[index]['url'] not in seen:
+                    item=feed[index]
+                    results.append({'id':len(results),**item});seen.add(item['url'])
+                if len(results)>=48:break
+            if len(results)>=48:break
     if len(results) < 5:
         raise QualityBlocked('Not enough fresh, dated reporting from trusted news sources.')
     answer = ai.json('Today is ' + now().isoformat() + '. Rank 4 DISTINCT fresh celebrity stories with substantial news value and corroboration. Prefer stories covered by multiple independent publishers, not gossip, unsupported allegations or trivial updates. Avoid these already produced topics: ' + json.dumps(excluded[-30:]) + '. Return {"topics":[{"subject":"celebrity full name","headline":"specific factual story","news_ids":[integers]}]}. Every news_id must be in this evidence. Do not change dates or invent people.\n' + json.dumps(results), tokens=1800)
