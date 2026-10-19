@@ -1,0 +1,97 @@
+name: Fame Files daily video (unlisted)
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 12:00 UTC = 14:00 South Africa. GitHub can delay scheduled jobs.
+    - cron: '0 12 * * *'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: fame-cloud-review
+  cancel-in-progress: false
+
+jobs:
+  review:
+    # Standard public runners only. Legacy cloud upload workflows stay disabled.
+    if: >-
+      github.repository == 'FrankleenMbanje/GhostDirector' &&
+      github.event.repository.private == false &&
+      (github.event_name == 'workflow_dispatch' || vars.FAME_CLOUD_DAILY != 'false')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    env:
+      PYTHONUNBUFFERED: '1'
+      FAME_CHROME_EXECUTABLE: /usr/bin/google-chrome
+      OLLAMA_HOST: 127.0.0.1:11434
+      OLLAMA_NO_CLOUD: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install free rendering dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg fonts-liberation
+          python -m pip install -r requirements-local.txt
+          npm ci --prefix local_studio/motion --no-audit --no-fund
+          command -v google-chrome
+      - name: Check editing policies
+        run: |
+          python -m unittest discover -s tests -q
+          npm run check --prefix local_studio/motion
+      - name: Verify The Fame Files publishing credential
+        id: channel_check
+        env:
+          FAME_PUBLISH_UNLISTED: 'true'
+          GD_YOUTUBE_TOKEN: ${{ secrets.GD_YOUTUBE_TOKEN }}
+        run: python -m local_studio.publish --check
+      - uses: actions/cache@v4
+        with:
+          path: output/local-studio/history.json
+          key: fame-history-${{ github.run_id }}
+          restore-keys: fame-history-
+      - name: Start downloaded local AI on this runner
+        if: steps.channel_check.outputs.already_published != 'true'
+        run: |
+          curl --fail --location --retry 3 https://ollama.com/install.sh -o "$RUNNER_TEMP/install-ollama.sh"
+          sh "$RUNNER_TEMP/install-ollama.sh"
+          mkdir -p output/local-studio
+          ollama serve > output/local-studio/model-server.log 2>&1 &
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:11434/api/tags; then break; fi
+            sleep 1
+          done
+          python -m local_studio.bootstrap --model-only
+      - name: Research and produce a local review
+        if: steps.channel_check.outputs.already_published != 'true'
+        run: python -m local_studio --daily
+      - name: Upload checked video as unlisted only
+        if: steps.channel_check.outputs.already_published != 'true'
+        env:
+          FAME_PUBLISH_UNLISTED: 'true'
+          GD_YOUTUBE_TOKEN: ${{ secrets.GD_YOUTUBE_TOKEN }}
+        run: python -m local_studio.publish
+      - name: Prepare bounded download package
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python -m local_studio.cloud_package
+      - name: Save review or failure report for one day
+        if: always() && hashFiles('output/cloud-download/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: fame-review-${{ github.run_id }}
+          path: output/cloud-download/
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error

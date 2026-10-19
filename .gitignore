@@ -40,6 +40,10 @@ __pycache__/
 *.egg-info/
 venv/
 .venv/
+.venv-local/
+.local-runtime/
+local_studio/motion/node_modules/
+local_studio/motion/out/
 .pytest_cache/
 .mypy_cache/
 

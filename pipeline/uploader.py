@@ -328,6 +328,8 @@ def upload_video(
     Idempotency reuses an existing upload only when its publish schedule
     matches this request, so retries cannot silently change release timing.
     """
+    if (config.PROJECT_ROOT / 'LOCAL_EDITING_ONLY').exists():
+        raise RuntimeError('Uploads are disabled: local DaVinci editing and review only.')
     effective_privacy, scheduled_at = _scheduled_upload_status(
         privacy_status, publish_at)
     logger.info(f"Preparing to upload {video_path.name} to YouTube...")
