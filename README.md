@@ -1,3 +1,5 @@
+> **Current production:** `.github/workflows/fame-review.yml` runs at 14:00 South Africa time on standard public GitHub runners. Completed five-minute-plus videos publish to The Fame Files as **unlisted only**. No stock footage. The retired cloud workflows remain disabled. See [the cloud guide](docs/FREE_GITHUB_STUDIO.md).
+
 # GhostDirector — The Fame Files production system
 
 An automated celebrity-news video factory: it picks today's trending story,

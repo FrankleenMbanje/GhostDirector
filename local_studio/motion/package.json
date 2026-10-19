@@ -1,0 +1,8 @@
+{
+  "name": "fame-files-local-motion",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {"studio": "remotion studio src/index.ts", "check": "tsc --noEmit"},
+  "dependencies": {"@remotion/cli": "4.0.536", "remotion": "4.0.536", "react": "19.2.3", "react-dom": "19.2.3"},
+  "devDependencies": {"typescript": "5.9.3", "@types/react": "19.2.7", "@types/react-dom": "19.2.3"}
+}

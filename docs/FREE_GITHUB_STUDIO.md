@@ -1,0 +1,13 @@
+# Free GitHub daily video system
+
+The owner authorized cloud production and unlisted YouTube uploads on 2026-10-19. The new `fame-review.yml` workflow is separate from the retired production workflows. It runs at 12:00 UTC (14:00 South Africa) and can be dispatched manually. Set repository variable `FAME_CLOUD_DAILY=false` to pause daily production. GitHub can delay scheduled starts.
+
+The new publisher is explicitly restricted to the GhostDirector GitHub repository and The Fame Files channel UCkxIY_tv62QYMO5MOsBQp9w. It requests unlisted visibility, omits any public release schedule, verifies the returned visibility and channel, and checks for a previous upload for today's production before making another video. Public publishing is not supported. The legacy uploader stays blocked by LOCAL_EDITING_ONLY. Local review production still does not upload.
+
+The production gates require at least five minutes of actual narration, multiple independent genuine celebrity video originals, real licensed photographs, original motion graphics and three thumbnail options. No stock footage, watermark erasure, repeated interview loop or silent padding fallback is allowed. Failure to find enough usable sources produces a clear blocked report, not a filler upload. A successful full cloud run must be observed before daily reliability is claimed.
+
+Standard public GitHub runners have free compute under current rules: https://docs.github.com/en/billing/concepts/product-billing/github-actions . No paid or larger runners are used. The hosted job has a six-hour limit and this workflow stops at 350 minutes. AI and rendering run on the runner CPU, so completion within that limit remains to be tested. See https://docs.github.com/en/actions/reference/limits .
+
+Artifact storage is separate and shared with other account usage. The optional review download is limited to 400 MiB; storage is refused if this repository's artifacts would exceed 450 MiB. Account-wide free storage and the Actions stop-usage budget must also be checked. No billing settings are changed. Review downloads expire after one day and are not a permanent footage library or a native Resolve project. Public-repository artifacts are not confidential.
+
+Only the dedicated GD_YOUTUBE_TOKEN secret is supplied to publisher steps. No environment file, session cookies, model weights or credentials are included in download packages. The first successful cloud video should be watched through its unlisted link before depending on unattended operation. The old cloud upload workflows remain disabled. Disable the local Windows daily task when cloud production takes over to avoid two producers.

@@ -1,60 +1,54 @@
-# GhostDirector daily scheduler registration (Phase 10).
-#
-# Registers a Windows Task Scheduler entry that runs the Fame Files daily
-# production at 08:00 local time (Africa/Harare), every day. Restart-safe:
-# the run lock + database idempotency in storage/scheduler.py prevent
-# duplicate production; a crash leaves state that the next run reclaims.
-#
-# Run from an elevated PowerShell, from the repository root:
-#   powershell -ExecutionPolicy Bypass -File scripts\schedule_daily.ps1
-#
-# Remove with:
-#   Unregister-ScheduledTask -TaskName "GhostDirector Daily Production" -Confirm:$false
-
-$taskName = "GhostDirector Daily Production"
+param([switch]$Remove)
+$ErrorActionPreference = 'Stop'
+$taskName = 'The Fame Files - Local Daily 14'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$python   = Join-Path $repoRoot "venv\Scripts\python.exe"
-$main     = Join-Path $repoRoot "main.py"
-$workdir  = $repoRoot
-
-if (-not (Test-Path $python)) {
-    Write-Error "venv python not found at $python - create the venv first."
-    exit 1
+if ($Remove) { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue; exit 0 }
+$python = Join-Path $repoRoot 'venv\Scripts\pythonw.exe'
+if (-not (Test-Path -LiteralPath $python)) { throw 'Set up the local Python runtime first.' }
+if ([TimeZoneInfo]::Local.GetUtcOffset((Get-Date)).TotalHours -ne 2) { throw 'Set the intended South Africa timezone before registering 14:00.' }
+$backupDirectory = Join-Path $repoRoot 'output\local-studio\scheduler-backup'
+New-Item -ItemType Directory -Path $backupDirectory -Force | Out-Null
+$legacy = Get-ScheduledTask -TaskName 'GhostDirector Daily Production' -ErrorAction SilentlyContinue
+if ($legacy) {
+    Export-ScheduledTask -TaskName $legacy.TaskName | Set-Content -LiteralPath (Join-Path $backupDirectory 'legacy-task.xml')
+    Disable-ScheduledTask -TaskName $legacy.TaskName | Out-Null
 }
-
-$action    = New-ScheduledTaskAction -Execute (Join-Path $repoRoot "scripts\daily_task.cmd") -WorkingDirectory $workdir
-$trigger   = New-ScheduledTaskTrigger -Daily -At 08:00
-$settings  = New-ScheduledTaskSettingsSet -StartWhenAvailable -RestartCount 3 `
-               -RestartInterval (New-TimeSpan -Minutes 10) `
-               -ExecutionTimeLimit (New-TimeSpan -Hours 8) `
-               -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-               -WakeToRun
-$principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U -RunLevel Limited
-
-$desc = "Fame Files daily production at 08:00 (Africa/Harare): short first, then the 8-min+ long-form. Idempotent: storage/scheduler.py refuses duplicate runs. Runs whether the user is logged on or not (S4U) and wakes the PC from sleep."
-
-# FIX-068: bare $env:USERNAME makes Register-ScheduledTask fail with
-# "The parameter is incorrect (20,8):UserId"; the full DOMAIN\user form is
-# required, and S4U (run-while-logged-off) registration needs an ELEVATED
-# shell: non-elevated shells get "Access is denied" and fall back to an
-# interactive-logon task (runs only while the user is logged on).
-# NOTE: NO em-dashes anywhere in this file (FIX-067: PS 5.1 reads it as
-# ANSI and a smart-quote byte terminates strings early).
+$action = New-ScheduledTaskAction -Execute $python -Argument '-m local_studio --daily' -WorkingDirectory $repoRoot
+$trigger = New-ScheduledTaskTrigger -Daily -At '14:00'
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -WakeToRun -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 8) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+$mode = 'S4U'
+$description = 'Local Fame Files starts at 14:00 South Africa time. Minimum five-minute review video, varied clean licensed sources and three thumbnails. No paid AI APIs or uploads. Requires PC power, internet, storage and installed local models.'
+$registeredOk = $false
 try {
-    Register-ScheduledTask -TaskName $taskName `
-        -Action $action -Trigger $trigger -Settings $settings -Principal $principal `
-        -Description $desc -Force -ErrorAction Stop | Out-Null
-    Write-Host "Mode: S4U - runs whether the user is logged on or not."
+    $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType S4U -RunLevel Limited
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description $description -Force -ErrorAction Stop | Out-Null
+    $registeredOk = $true
 } catch {
-    Write-Warning "S4U principal rejected ($($_.Exception.Message)); registering as interactive-logon task instead."
-    Register-ScheduledTask -TaskName $taskName `
-        -Action $action -Trigger $trigger -Settings $settings `
-        -Description $desc -Force | Out-Null
-    Write-Host "Mode: interactive only - the user must be logged on at 08:00."
+    $mode = 'Interactive - user must be logged on'
+    $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited
+    try {
+        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description ($description + ' Interactive logon required.') -Force -ErrorAction Stop | Out-Null
+        $registeredOk = $true
+    } catch { $registeredOk = $false }
 }
-
-Write-Host ""
-Write-Host "Registered '$taskName' - daily at 08:00, StartWhenAvailable, WakeToRun."
-Write-Host "Test now:  Start-ScheduledTask -TaskName '$taskName'"
-Write-Host "Status:    Get-ScheduledTaskInfo -TaskName '$taskName'"
-Write-Host "Database:  set DATABASE_URL before the task fires (see .env.example)."
+if (-not $registeredOk) {
+    $startup = [Environment]::GetFolderPath('Startup')
+    $shortcutPath = Join-Path $startup 'The Fame Files Local Scheduler.lnk'
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = $python
+    $shortcut.Arguments = '-m local_studio --schedule-loop'
+    $shortcut.WorkingDirectory = $repoRoot
+    $shortcut.Description = 'The Fame Files daily local production at 2pm South Africa time. Requires the PC awake and signed in.'
+    $shortcut.Save()
+    if (-not (Test-Path -LiteralPath $shortcutPath)) { throw 'User-level scheduler installation failed.' }
+    $process = Start-Process -FilePath $python -ArgumentList '-m local_studio --schedule-loop' -WorkingDirectory $repoRoot -WindowStyle Hidden -PassThru
+    [ordered]@{mode='per-user sign-in scheduler';daily_start='14:00';timezone='Africa/Johannesburg';startup_shortcut=$shortcutPath;process_id=$process.Id;requires_awake_signed_in=$true;uploads_enabled=$false;task_scheduler_registered=$false} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $repoRoot 'output\local-studio\schedule.json')
+    Write-Output 'Installed the per-user 14:00 scheduler. Windows Task Scheduler denied registration. PC must be awake and signed in.'
+    exit 0
+}
+$registered = Get-ScheduledTask -TaskName $taskName
+$info = Get-ScheduledTaskInfo -TaskName $taskName
+[ordered]@{ task_name=$taskName; mode=$mode; daily_start='14:00'; timezone='Africa/Johannesburg'; trigger=$registered.Triggers.StartBoundary; next_run=$info.NextRunTime.ToString('o'); action=$registered.Actions.Execute; arguments=$registered.Actions.Arguments; uploads_enabled=$false } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $repoRoot 'output\local-studio\schedule.json')
+Write-Output "Registered $taskName. Mode: $mode. Next start: $($info.NextRunTime)."
