@@ -6,11 +6,29 @@ from local_studio.ai import LocalAI
 from local_studio.common import QualityBlocked, now, settings
 from local_studio.edit import plan_shots, validate_mix
 from local_studio.media import accepted_license, usable_subject
-from local_studio.research import allowed, fresh, validate_facts
+from local_studio.research import allowed, fresh, validate_facts, feed_news, discover
+from email.utils import format_datetime
+from unittest.mock import Mock
 from local_studio.voice import phrases, wrap, align_source_words, merge_orphan_cues
 
 
 class ProductionPolicyTests(unittest.TestCase):
+    def test_publisher_feeds_reject_stale_and_untrusted_links(self):
+        date=format_datetime(now())
+        old=format_datetime(now()-timedelta(days=6))
+        xml=f'<rss><channel><item><title>Fresh celebrity update</title><link>https://variety.com/example</link><pubDate>{date}</pubDate></item><item><title>Old</title><link>https://variety.com/old</link><pubDate>{old}</pubDate></item><item><title>Untrusted</title><link>https://evil.test/a</link><pubDate>{date}</pubDate></item></channel></rss>'
+        response=Mock();response.content=xml.encode()
+        with patch('local_studio.research.requests.get',return_value=response):
+            self.assertEqual([x['title'] for x in feed_news('https://variety.com/feed/')],['Fresh celebrity update'])
+
+    def test_discovery_recovers_when_search_returns_no_dated_news(self):
+        feed=[{'title':'Celebrity story '+str(i),'url':'https://variety.com/story-'+str(i),'date':now().isoformat(),'summary':'An attributed update.'} for i in range(6)]
+        ai=Mock();ai.json.return_value={'topics':[{'subject':'Example celebrity','headline':'A sourced update','news_ids':[0]}]}
+        with patch('local_studio.research.DDGS') as search,patch('local_studio.research.feed_news',return_value=feed):
+            search.return_value.news.return_value=[]
+            topics=discover(ai,[])
+        self.assertEqual(topics[0]['discovery'][0]['url'],feed[0]['url'])
+
     def test_stock_is_rejected_even_with_enough_genuine_sources(self):
         shots=[{'kind':'video','role':'subject','origin_id':str(i),'source_start':0,'duration':75} for i in range(4)]
         shots.append({'kind':'video','role':'context','origin_id':'stock','source_start':0,'duration':5})
