@@ -7,9 +7,16 @@ from unittest.mock import Mock, patch
 
 from local_studio.common import QualityBlocked
 from local_studio.publish import CHANNEL, service, upload_body, verified_unlisted
+from local_studio.cloud_package import public_research
 
 
 class CloudPublishTests(unittest.TestCase):
+    def test_public_research_keeps_citations_without_redistributing_source_quotes(self):
+        value={'facts':[{'claim':'Original factual paraphrase','evidence':[{'source_id':1,'quote':'Publisher prose'}]}],'topic':{'discovery':[{'url':'https://example.test','summary':'Copied feed excerpt'}]}}
+        safe=public_research(value)
+        self.assertEqual(safe['facts'][0]['evidence'],[{'source_id':1}])
+        self.assertEqual(safe['topic']['discovery'],[{'url':'https://example.test'}])
+
     def test_local_production_cannot_publish_even_with_a_switch(self):
         with patch.dict(os.environ, {'GITHUB_ACTIONS':'false', 'FAME_PUBLISH_UNLISTED':'true'}):
             with self.assertRaises(QualityBlocked):

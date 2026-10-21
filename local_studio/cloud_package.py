@@ -11,6 +11,13 @@ import requests
 from .common import OUTPUT, ROOT, QualityBlocked
 
 
+def public_research(value):
+    if isinstance(value,dict):
+        return {k:public_research(v) for k,v in value.items() if k not in {'quote','summary'}}
+    if isinstance(value,list):return [public_research(v) for v in value]
+    return value
+
+
 def package():
     destination = ROOT/'output/cloud-download'
     selected = [OUTPUT/name for name in ['status.json', 'daily.log', 'doctor.json','model-server.log','ai_smoke.json']]
@@ -47,7 +54,12 @@ def package():
     for source in selected:
         target = destination/source.relative_to(OUTPUT)
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
+        if source.suffix=='.json':
+            data=json.loads(source.read_text(encoding='utf-8-sig'))
+            if source.name=='research_sources.json':
+                data=[{k:s[k] for k in ['id','url','title','domain','retrieved_at'] if k in s} for s in data]
+            target.write_text(json.dumps(public_research(data),indent=2,ensure_ascii=False),encoding='utf-8')
+        else:shutil.copyfile(source, target)
     summary = os.environ.get('GITHUB_STEP_SUMMARY')
     if summary:
         state = json.loads((OUTPUT/'status.json').read_text()) if (OUTPUT/'status.json').exists() else {}

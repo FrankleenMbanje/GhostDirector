@@ -12,7 +12,7 @@
   "minimum_domains": 3,
   "minimum_facts": 20,
   "freshness_hours": 72,
-  "candidate_attempts": 4,
+  "candidate_attempts": 6,
   "minimum_video_originals": 3,
   "minimum_subject_video_originals": 2,
   "maximum_context_share": 0.0,

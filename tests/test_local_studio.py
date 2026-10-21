@@ -13,6 +13,18 @@ from local_studio.voice import phrases, wrap, align_source_words, merge_orphan_c
 
 
 class ProductionPolicyTests(unittest.TestCase):
+    def test_ranked_topics_do_not_duplicate_a_story_or_accept_unrelated_source_ids(self):
+        rows=[('Jane Doe announces a new film','https://variety.com/jane'),('John Roe talks about his career','https://billboard.com/john')]
+        rows += [('Other Celebrity '+str(i),'https://deadline.com/other-'+str(i)) for i in range(4)]
+        feed=[{'title':title,'url':url,'date':now().isoformat(),'summary':''} for title,url in rows]
+        ai=Mock();ai.json.return_value={'topics':[{'subject':'Jane Doe','headline':'Invented dramatic claim','news_ids':[0,1]},{'subject':'Jane Doe','news_ids':[0]},{'subject':'John Roe','news_ids':[1]}]}
+        with patch('local_studio.research.DDGS') as search,patch('local_studio.research.feed_news',return_value=feed):
+            search.return_value.news.return_value=[]
+            topics=discover(ai,[])
+        self.assertEqual(len(topics),2)
+        self.assertEqual(topics[0]['headline'],rows[0][0])
+        self.assertEqual([s['url'] for s in topics[0]['discovery']],[rows[0][1]])
+
     def test_publisher_feeds_reject_stale_and_untrusted_links(self):
         date=format_datetime(now())
         old=format_datetime(now()-timedelta(days=6))
@@ -22,7 +34,7 @@ class ProductionPolicyTests(unittest.TestCase):
             self.assertEqual([x['title'] for x in feed_news('https://variety.com/feed/')],['Fresh celebrity update'])
 
     def test_discovery_recovers_when_search_returns_no_dated_news(self):
-        feed=[{'title':'Celebrity story '+str(i),'url':'https://variety.com/story-'+str(i),'date':now().isoformat(),'summary':'An attributed update.'} for i in range(6)]
+        feed=[{'title':'Example celebrity story '+str(i),'url':'https://variety.com/story-'+str(i),'date':now().isoformat(),'summary':'An attributed update.'} for i in range(6)]
         ai=Mock();ai.json.return_value={'topics':[{'subject':'Example celebrity','headline':'A sourced update','news_ids':[0]}]}
         with patch('local_studio.research.DDGS') as search,patch('local_studio.research.feed_news',return_value=feed):
             search.return_value.news.return_value=[]
