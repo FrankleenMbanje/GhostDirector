@@ -61,7 +61,7 @@ def feed_news(url):
             title=item.findtext('title','').strip()
             if allowed(link) and fresh(date) and title:
                 found.append({'title':title,'url':link,'date':date,'summary':BeautifulSoup(item.findtext('description',''),'html.parser').get_text(' ',strip=True)[:300]})
-            if len(found)>=12:break
+            if len(found)>=30:break
     except (requests.RequestException,ET.ParseError):
         LOG.warning('Publisher feed unavailable: %s',urlparse(url).hostname)
     return found
@@ -108,21 +108,35 @@ def discover(ai, excluded: list[str]) -> list[dict]:
         with ThreadPoolExecutor(max_workers=6) as pool:
             feeds=list(pool.map(feed_news,NEWS_FEEDS))
         # Interleave publishers so a single large feed cannot fill the context.
-        for index in range(12):
+        for index in range(30):
             for feed in feeds:
                 if index<len(feed) and feed[index]['url'] not in seen:
                     item=feed[index]
                     results.append({'id':len(results),**item});seen.add(item['url'])
-                if len(results)>=48:break
-            if len(results)>=48:break
+                if len(results)>=160:break
+            if len(results)>=160:break
     if len(results) < 5:
         raise QualityBlocked('Not enough fresh, dated reporting from trusted news sources.')
     ranked=sorted(results,key=lambda r:reporting_priority(r,results),reverse=True)
     ranking=[{k:r[k] for k in ['id','title','date']}|{'summary':r['summary'][:160]} for r in ranked[:36]]
-    answer = ai.json('Today is ' + now().isoformat() + '. Rank six DISTINCT fresh celebrity stories. Prioritize widely followed people and stories corroborated by multiple publishers. Prefer substantive updates, not narrow production announcements, signing deals or industry promotions. Never repeat the same event under a second person\'s name. Avoid these already produced topics: ' + json.dumps(excluded[-30:]) + '. Return {"topics":[{"subject":"celebrity full name appearing in evidence","news_ids":[integers]}]}. Every news_id must be in this evidence. Do not invent people.\n' + json.dumps(ranking), tokens=2200)
+    # A stable editorial roster supplies grounded fallbacks when a small local model returns only one topic.
+    roster=['Charli XCX','Taylor Swift','Beyoncé','Beyonce','Rihanna','Drake','Kendrick Lamar','Kanye West','Sean Combs','Diddy','Nicki Minaj','Cardi B','Ariana Grande','Selena Gomez','Justin Bieber','Billie Eilish','Sabrina Carpenter','Olivia Rodrigo','Lady Gaga','Miley Cyrus','Britney Spears','Madonna','Shakira','Bad Bunny','Harry Styles','Adele','Dua Lipa','The Weeknd','Bruno Mars','Travis Scott','Megan Thee Stallion','Doja Cat','SZA','Usher','Nick Jonas','Joe Jonas','Demi Lovato','Jennifer Lopez','Ben Affleck','Jennifer Aniston','Angelina Jolie','Brad Pitt','Leonardo DiCaprio','Tom Cruise','Zendaya','Tom Holland','Robert Pattinson','Kristen Stewart','Ryan Reynolds','Blake Lively','Kim Kardashian','Kylie Jenner','Kendall Jenner','Khloé Kardashian','Kris Jenner','Julia Stiles','Anne Hathaway','Scarlett Johansson','Florence Pugh','Margot Robbie','Johnny Depp','Amber Heard','Will Smith','Jada Pinkett Smith','Denzel Washington','Jamie Foxx','Kevin Hart','Dwayne Johnson','Timothée Chalamet','Jenna Ortega','Sydney Sweeney','Millie Bobby Brown','Paul McCartney','Ringo Starr','Elton John','Bruce Springsteen','Dolly Parton','Cher','Christina Applegate','Christina Aguilera','Meghan Markle','Prince Harry','Prince William','Kate Middleton','David Beckham','Victoria Beckham','Travis Kelce','Heath Ledger']
+    drafts=[]
+    for name in roster:
+        rows=[r for r in ranked if mentions(name,r['title']+' '+r['summary'])]
+        if len({domain(r['url']) for r in rows})>=2:
+            drafts.append({'subject':name,'news_ids':[r['id'] for r in rows]})
+    if len(drafts)<3:
+        schema={'type':'object','additionalProperties':False,'required':['topics'],'properties':{'topics':{'type':'array','minItems':3,'maxItems':6,'items':{'type':'object','additionalProperties':False,'required':['subject','news_ids'],'properties':{'subject':{'type':'string','minLength':3,'maxLength':80},'news_ids':{'type':'array','minItems':1,'maxItems':6,'items':{'type':'integer','enum':[r['id'] for r in ranking]}}}}}}}
+        answer = ai.json('Today is ' + now().isoformat() + '. Rank six DISTINCT fresh celebrity stories. Prioritize widely followed people and stories corroborated by multiple publishers. Prefer substantive updates, not narrow production announcements, signing deals or industry promotions. Never repeat the same event under a second person\'s name. Avoid these already produced topics: ' + json.dumps(excluded[-30:]) + '. Return {"topics":[{"subject":"celebrity full name appearing in evidence","news_ids":[integers]}]}. Every news_id must be in this evidence. Do not invent people.\n' + json.dumps(ranking), tokens=2200,schema=schema)
+        drafts.extend(answer.get('topics',[]))
+    def topic_priority(topic):
+        rows=[r for r in ranked if r['id'] in topic.get('news_ids',[]) and mentions(topic.get('subject',''),r['title']+' '+r['summary'])]
+        return (len({domain(r['url']) for r in rows}),max((reporting_priority(r,results) for r in rows),default=-1))
+    drafts.sort(key=topic_priority,reverse=True)
     topics = []
     selected_urls=set();fingerprints=set()
-    for topic in answer.get('topics', []):
+    for topic in drafts:
         ids = topic.get('news_ids', [])
         subject=topic.get('subject','')
         if not isinstance(subject,str) or not subject.strip() or not isinstance(ids,list):continue
