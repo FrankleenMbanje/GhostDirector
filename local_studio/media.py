@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-
-
 import hashlib
 
 import json
@@ -14,9 +12,7 @@ import time
 
 from pathlib import Path
 
-from urllib.parse import urlparse
-
-
+from urllib.parse import urlparse,parse_qsl,urlencode,urlunparse
 
 import requests
 
@@ -24,35 +20,26 @@ from bs4 import BeautifulSoup
 
 from PIL import Image, ImageDraw
 
-
-
 from .common import LOG, OUTPUT, ROOT, QualityBlocked, command, duration, probe, save, settings, space_check
 
-
-
 COMMONS = 'https://commons.wikimedia.org/w/api.php'
+USER_AGENT='FameFilesLocalStudio/1.0 (https://github.com/FrankleenMbanje/GhostDirector; licensed media research)'
 
-
-
-
+def canonical_media_url(url):
+    parsed=urlparse(url)
+    if parsed.hostname!='upload.wikimedia.org':return url
+    query=urlencode([(key,value) for key,value in parse_qsl(parsed.query) if not key.startswith('utm_')])
+    return urlunparse(parsed._replace(query=query))
 
 def plain(value):
 
     return BeautifulSoup(value or '', 'html.parser').get_text(' ', strip=True)
-
-
-
-
 
 def accepted_license(name: str) -> bool:
 
     value = name.casefold().strip()
 
     return value in {'cc0', 'cc0 1.0', 'public domain', 'pd', 'cc by 2.0', 'cc by 2.5', 'cc by 3.0', 'cc by 4.0'}
-
-
-
-
 
 def candidates(subject: str, media_type: str) -> list[dict]:
 
@@ -66,7 +53,7 @@ def candidates(subject: str, media_type: str) -> list[dict]:
 
         'iiprop': 'url|size|extmetadata', 'iiurlwidth': 1920
 
-    }, headers={'User-Agent': 'FameFilesLocalStudio/1.0 (licensed media research)'}, timeout=40)
+    }, headers={'User-Agent': USER_AGENT}, timeout=40)
 
     response.raise_for_status()
 
@@ -88,7 +75,7 @@ def candidates(subject: str, media_type: str) -> list[dict]:
 
             continue
 
-        url = info.get('url', '')
+        url = canonical_media_url(info.get('url', ''))
 
         if urlparse(url).hostname != 'upload.wikimedia.org' or urlparse(url).scheme != 'https':
 
@@ -114,10 +101,6 @@ def candidates(subject: str, media_type: str) -> list[dict]:
 
     return result
 
-
-
-
-
 def fetch(asset: dict, cache: Path) -> Path:
 
     extension = Path(urlparse(asset['url']).path).suffix.lower()
@@ -136,7 +119,7 @@ def fetch(asset: dict, cache: Path) -> Path:
 
     partial = target.with_suffix(target.suffix + '.part')
 
-    with requests.get(asset['url'], stream=True, timeout=(15, 45), headers={'User-Agent': 'FameFilesLocalStudio/1.0'}) as response:
+    with requests.get(canonical_media_url(asset['url']), stream=True, timeout=(15, 45), headers={'User-Agent': USER_AGENT}) as response:
 
         response.raise_for_status()
 
@@ -163,10 +146,6 @@ def fetch(asset: dict, cache: Path) -> Path:
     partial.replace(target)
 
     return target
-
-
-
-
 
 def visual_sheet(asset: dict, source: Path, cache: Path) -> Path:
 
@@ -216,10 +195,6 @@ def visual_sheet(asset: dict, source: Path, cache: Path) -> Path:
 
     return target
 
-
-
-
-
 def dhash(path: Path):
 
     with Image.open(path) as image:
@@ -236,19 +211,11 @@ def dhash(path: Path):
 
     return bits
 
-
-
-
-
 def usable_subject(verdict: dict) -> bool:
 
     confidence=float(verdict.get('identity_confidence',0))
 
     return verdict.get('subject_present') is True and math.isfinite(confidence) and .85<=confidence<=1 and verdict.get('publisher_or_stock_brand_visible') is False and verdict.get('faces_framed_well') is True and verdict.get('clear_usable_picture') is True and verdict.get('uncertain') is False
-
-
-
-
 
 def acquire(ai, topic: dict, out: Path, research=None) -> list[dict]:
 
