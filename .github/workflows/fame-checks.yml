@@ -12,6 +12,20 @@ on:
 permissions:
   contents: read
 jobs:
+  voice-network:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m pip install -r requirements-local.txt
+      - run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg
+      - name: Check actual cloud narration and caption timing
+        env:
+          PYTHONPATH: .
+        run: python tests/smoke_voice.py
   checks:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

@@ -94,7 +94,8 @@ def discover(ai, excluded: list[str]) -> list[dict]:
             if len(results)>=48:break
     if len(results) < 5:
         raise QualityBlocked('Not enough fresh, dated reporting from trusted news sources.')
-    answer = ai.json('Today is ' + now().isoformat() + '. Rank 4 DISTINCT fresh celebrity stories with substantial news value and corroboration. Prefer stories covered by multiple independent publishers, not gossip, unsupported allegations or trivial updates. Avoid these already produced topics: ' + json.dumps(excluded[-30:]) + '. Return {"topics":[{"subject":"celebrity full name","headline":"specific factual story","news_ids":[integers]}]}. Every news_id must be in this evidence. Do not change dates or invent people.\n' + json.dumps(results), tokens=1800)
+    ranking=[{k:r[k] for k in ['id','title','date']}|{'summary':r['summary'][:160]} for r in results[:36]]
+    answer = ai.json('Today is ' + now().isoformat() + '. Rank 4 DISTINCT fresh celebrity stories with substantial news value and corroboration. Prefer stories covered by multiple independent publishers, not gossip, unsupported allegations or trivial updates. Avoid these already produced topics: ' + json.dumps(excluded[-30:]) + '. Return {"topics":[{"subject":"celebrity full name","headline":"specific factual story","news_ids":[integers]}]}. Every news_id must be in this evidence. Do not change dates or invent people.\n' + json.dumps(ranking), tokens=1800)
     topics = []
     for topic in answer.get('topics', []):
         ids = topic.get('news_ids', [])
@@ -180,15 +181,18 @@ def investigate(ai, topic: dict, out) -> dict:
         raise QualityBlocked('Research lacks six readable articles across three independent domains.')
     save(out / 'research_sources.json', sources)
     # Bound context to fit the 16GB PC; retain the complete retrieved articles locally.
-    evidence = [{'id': s['id'], 'title': s['title'], 'url': s['url'], 'text': s['text'][:2400]} for s in sources[:8]]
-    answer = ai.json('Research this celebrity story: ' + json.dumps(topic) + '. Extract 24-30 DISTINCT substantive facts for a 5-7 minute explanatory video. Separate the current update, established background, chronology and what remains unknown. No speculation about motive, guilt, diagnoses or consequences. Return {"facts":[{"claim":"original concise factual statement","evidence":[{"source_id":integer,"quote":"exact 20-220 character substring from that article"}]}],"unknowns":["explicitly unknown points"]}. Use only the source text below; quoted support must be exact.\n' + json.dumps(evidence), tokens=6500)
-    facts = validate_facts(answer.get('facts', []), sources)
+    raw_facts=[];unknowns=[]
+    for start in range(0,len(sources),2):
+        evidence=[{'id':s['id'],'title':s['title'],'text':s['text'][:4800]} for s in sources[start:start+2]]
+        answer=ai.json('Research '+topic['headline']+'. Extract 8-12 DISTINCT supported facts from this source batch, including reported background and chronology. Do not speculate. Return {"facts":[{"claim":"concise fact","evidence":[{"source_id":integer,"quote":"exact 20-220 character substring"}]}],"unknowns":[strings]}. Quotes must be exact; do not invent facts to reach a count.\n'+json.dumps(evidence),tokens=2400)
+        raw_facts.extend(answer.get('facts',[]));unknowns.extend(answer.get('unknowns',[]))
+    facts = validate_facts(raw_facts, sources)
     if len(facts) < cfg['minimum_facts']:
         raise QualityBlocked(f'Only {len(facts)} facts had exact supporting evidence; at least {cfg["minimum_facts"]} required.')
     used_sources={e['source_id'] for fact in facts for e in fact['evidence']}
     if len(used_sources)<4 or len({s['domain'] for s in sources if s['id'] in used_sources})<3:
         raise QualityBlocked('Supported facts do not draw on enough independent reporting.')
-    research = {'topic': topic, 'facts': facts, 'unknowns': answer.get('unknowns', []), 'source_count': len(sources), 'domains': sorted({s['domain'] for s in sources})}
+    research = {'topic': topic, 'facts': facts, 'unknowns': list(dict.fromkeys(unknowns)), 'source_count': len(sources), 'domains': sorted({s['domain'] for s in sources})}
     save(out / 'research.json', research)
     return research
 
