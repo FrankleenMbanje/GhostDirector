@@ -10,7 +10,7 @@
   "minimum_words": 800,
   "minimum_articles": 6,
   "minimum_domains": 3,
-  "minimum_facts": 20,
+  "minimum_facts": 16,
   "freshness_hours": 72,
   "candidate_attempts": 6,
   "minimum_video_originals": 3,
@@ -19,8 +19,8 @@
   "minimum_photo_led_photos": 6,
   "maximum_context_share": 0.0,
   "minimum_video_share": 0.55,
-  "maximum_source_share": 0.30,
-  "maximum_graphics_share": 0.20,
+  "maximum_source_share": 0.3,
+  "maximum_graphics_share": 0.2,
   "minimum_free_gb": 2.5,
   "maximum_asset_mb": 120,
   "voice_provider": "edge",
@@ -30,5 +30,6 @@
   "width": 1920,
   "height": 1080,
   "fps": 30,
-  "uploads_enabled": false
+  "uploads_enabled": false,
+  "target_facts": 20
 }
