@@ -1423,6 +1423,10 @@ async def fetch_assets(script: Script, template: dict, output_dir: Path) -> Scri
     2. We track _used_urls globally and skip duplicates
     3. DDG returns 10 results and we pick the first unused one
     """
+    if template.get('visuals', {}).get('media_policy') == 'licensed_subjects':
+        from pipeline.licensed_media import fetch_licensed_subjects
+        return await fetch_licensed_subjects(script, template, output_dir)
+
     global _used_urls, _broll_clips, _BANNED_MEDIA, _BANNED_DOMAINS
     _used_urls = set()  # Reset for each run
     # Load the permanent junk-media blacklist (QC ban pass writes it)

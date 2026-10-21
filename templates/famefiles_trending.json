@@ -35,6 +35,7 @@
     "pitch": "+2Hz"
   },
   "visuals": {
+    "media_policy": "licensed_subjects",
     "resolution": "1080x1920",
     "fps": 30,
     "aspect_ratio": "9:16",
