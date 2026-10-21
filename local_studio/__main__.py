@@ -61,7 +61,23 @@ def credits(assets, out):
     (out/'MEDIA_CREDITS.txt').write_text('\n'.join(lines),encoding='utf-8')
 
 
-def daily(research_only=False):
+def cached_research(topic,out):
+    from .research import allowed,domain,validate_facts
+    research=json.loads((out/'research.json').read_text(encoding='utf-8'))
+    sources=json.loads((out/'research_sources.json').read_text(encoding='utf-8'))
+    cfg=settings()
+    if research.get('editorial_curated') is not True or research['topic']['fingerprint']!=topic['fingerprint']:
+        raise QualityBlocked('Research checkpoint lacks current editorial provenance.')
+    if len(sources)<cfg['minimum_articles'] or len({domain(s['url']) for s in sources})<cfg['minimum_domains'] or any(not allowed(s['url']) or not s.get('text') for s in sources):
+        raise QualityBlocked('Research checkpoint lacks its complete original source evidence.')
+    facts=validate_facts(research['facts'],sources)
+    used={e['source_id'] for f in facts for e in f['evidence']}
+    if len(facts)!=len(research['facts']) or len(facts)<cfg['minimum_facts'] or len(used)<4 or len({domain(s['url']) for s in sources if s['id'] in used})<3:
+        raise QualityBlocked('Research checkpoint does not pass exact evidence and independent-source checks.')
+    return research
+
+
+def daily(research_only=False,continue_research=False):
     setup_logging()
     OUTPUT.mkdir(parents=True,exist_ok=True)
     try:
@@ -89,8 +105,18 @@ def daily(research_only=False):
             history_path=OUTPUT/'history.json'
             history=json.loads(history_path.read_text()) if history_path.exists() else []
             state('running','Researching','Searching current celebrity reporting and comparing stories.')
-            candidates=discover(ai,[x['title'] for x in history])
-            save(OUTPUT/'runs'/day/'trend_candidates.json',candidates)
+            selected=None
+            if continue_research:
+                marker=json.loads((OUTPUT/'runs'/day/'research_ready.json').read_text(encoding='utf-8'))
+                if marker.get('github_run_id')!=os.environ.get('GITHUB_RUN_ID'):
+                    raise QualityBlocked('Research continuation belongs to another GitHub run.')
+                selected=marker['fingerprint']
+                candidates=json.loads((OUTPUT/'runs'/day/'trend_candidates.json').read_text(encoding='utf-8'))
+                if not any(t['fingerprint']==selected for t in candidates):raise QualityBlocked('Research continuation topic is missing.')
+                candidates.sort(key=lambda t:t['fingerprint']!=selected)
+            else:
+                candidates=discover(ai,[x['title'] for x in history])
+                save(OUTPUT/'runs'/day/'trend_candidates.json',candidates)
             failures=[]
             for topic in candidates:
                 if any(x.get('fingerprint')==topic['fingerprint'] for x in history):
@@ -99,8 +125,9 @@ def daily(research_only=False):
                 out.mkdir(parents=True,exist_ok=True)
                 try:
                     state('running','Researching',topic['headline'],project=str(out))
-                    research=investigate(ai,topic,out)
+                    research=cached_research(topic,out) if continue_research and topic['fingerprint']==selected else investigate(ai,topic,out)
                     if research_only:
+                        save(OUTPUT/'runs'/day/'research_ready.json',{'fingerprint':topic['fingerprint'],'github_run_id':os.environ.get('GITHUB_RUN_ID')})
                         state('research_complete','Research saved','Supported sources and facts saved; no video was produced.',project=str(out))
                         return 0
                     state('running','Checking visuals','Finding multiple clean licensed video originals and genuine photographs.',project=str(out))
@@ -144,6 +171,7 @@ def main():
     parser.add_argument('--daily',action='store_true')
     parser.add_argument('--doctor',action='store_true')
     parser.add_argument('--research-only',action='store_true')
+    parser.add_argument('--continue-research',action='store_true')
     parser.add_argument('--dashboard',action='store_true')
     parser.add_argument('--schedule-loop',action='store_true')
     args=parser.parse_args()
@@ -156,7 +184,7 @@ def main():
     if args.doctor:
         result=doctor();save(OUTPUT/'doctor.json',result);print(json.dumps(result,indent=2));return 0 if result['ready'] else 2
     if args.daily or args.research_only:
-        return daily(args.research_only)
+        return daily(args.research_only,args.continue_research)
     parser.print_help()
     return 0
 
