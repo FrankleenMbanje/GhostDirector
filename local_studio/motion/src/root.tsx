@@ -38,5 +38,5 @@ const GraphicInner=({headline,detail,eyebrow,variant,kind,points,place}:Props)=>
 const GraphicPlate=Interactive.create({Component:GraphicInner,layout:'absolute-fill'});
 export const Root=()=> <>
  <Composition id="GraphicPlate" component={GraphicPlate} durationInFrames={210} fps={30} width={1920} height={1080} defaultProps={{headline:'The facts come first',detail:'Original local motion design. No paid image generation.',eyebrow:'THE FAME FILES',variant:0,kind:'statement',points:[]}}/>
- <Composition id="PhotoPlate" component={PhotoPlate} durationInFrames={360} fps={30} width={1920} height={1080} defaultProps={{photo:'',secondPhoto:'',layout:0,label:'',archive:'ARCHIVE',seconds:10}}/>
+ <Composition id="PhotoPlate" component={PhotoPlate} durationInFrames={300} calculateMetadata={({props})=>({durationInFrames:Math.max(1,Math.round(props.seconds*30))})} fps={30} width={1920} height={1080} defaultProps={{photo:'',secondPhoto:'',layout:0,label:'',archive:'ARCHIVE',seconds:10}}/>
 </>;

@@ -31,6 +31,19 @@ class LocalInferenceTests(unittest.TestCase):
             LocalAI().json('Inspect fixture',[Path('fixture.png')])
         self.assertEqual(post.call_args.kwargs['json']['model'],'qwen3-vl:4b-instruct')
 
+    def test_repetition_abort_retries_once_with_bounded_schema(self):
+        failed=self.response([{'error':'prediction aborted, token repeat limit reached'}])
+        good=self.response([{'message':{'content':'{"ok":true}'},'done':True}])
+        schema={'type':'object','properties':{'ok':{'type':'boolean'}}}
+        with patch('local_studio.ai.requests.post',side_effect=[failed,good]) as post:
+            self.assertEqual(LocalAI().json('Fixture',schema=schema),{'ok':True})
+        self.assertEqual(post.call_count,2)
+        self.assertEqual(post.call_args.kwargs['json']['format'],schema)
+        self.assertGreater(post.call_args.kwargs['json']['options']['repeat_penalty'],1)
+        with patch('local_studio.ai.requests.post',return_value=failed) as post:
+            with self.assertRaises(QualityBlocked):LocalAI().json('Fixture')
+        self.assertEqual(post.call_count,2)
+
     def test_incomplete_or_truncated_stream_is_never_accepted(self):
         for final in [{'message':{'content':'{"ok":true}'}},{'message':{'content':'{"ok":true}'},'done':True,'done_reason':'length'}]:
             with patch('local_studio.ai.requests.post',return_value=self.response([final])):
