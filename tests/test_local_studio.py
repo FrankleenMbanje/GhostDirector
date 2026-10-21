@@ -13,6 +13,17 @@ from local_studio.voice import phrases, wrap, align_source_words, merge_orphan_c
 
 
 class ProductionPolicyTests(unittest.TestCase):
+    def test_corroborated_roster_supplies_multiple_topics_without_single_model_choice(self):
+        rows=[('Charli XCX cancels Arizona concert','https://variety.com/charli'),('Charli XCX loses voice','https://billboard.com/charli'),('Charli XCX show canceled','https://deadline.com/charli'),('Taylor Swift announces album','https://variety.com/taylor'),('Taylor Swift album update','https://billboard.com/taylor'),('Julia Stiles recalls tribute','https://variety.com/julia'),('Julia Stiles tribute interview','https://deadline.com/julia')]
+        feed=[{'title':title,'url':url,'date':now().isoformat(),'summary':''} for title,url in rows]
+        ai=Mock();ai.json.side_effect=AssertionError('Corroborated roster should not require model ranking')
+        with patch('local_studio.research.DDGS') as search,patch('local_studio.research.feed_news',return_value=feed):
+            search.return_value.news.return_value=[]
+            topics=discover(ai,[])
+        self.assertEqual(topics[0]['subject'],'Charli XCX')
+        self.assertEqual(len(topics),3)
+        self.assertEqual(len(topics[0]['discovery']),3)
+
     def test_ranked_topics_do_not_duplicate_a_story_or_accept_unrelated_source_ids(self):
         rows=[('Jane Doe announces a new film','https://variety.com/jane'),('John Roe talks about his career','https://billboard.com/john')]
         rows += [('Other Celebrity '+str(i),'https://deadline.com/other-'+str(i)) for i in range(4)]
