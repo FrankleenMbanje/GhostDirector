@@ -107,6 +107,8 @@ def daily(research_only=False):
                     assets=acquire(ai,topic,out,research)
                     state('running','Writing','Building a substantive long-form explanation from the documented facts.',project=str(out))
                     script=write_script(ai,research,out)
+                    from .geography import prepare_maps
+                    prepare_maps(ai,research,script,out)
                     state('running','Narrating','Generating the approved voice and measuring its real running time.',project=str(out))
                     timing=narrate(script,out)
                     state('running','Editing','Assembling varied footage, original graphics and timed captions.',project=str(out))

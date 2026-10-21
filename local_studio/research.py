@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from concurrent.futures import ThreadPoolExecutor
@@ -16,6 +17,28 @@ from ddgs import DDGS
 from .common import LOG, QualityBlocked, now, save, settings
 
 NEWS_DOMAINS = {'apnews.com', 'reuters.com', 'bbc.com', 'bbc.co.uk', 'abcnews.com', 'abcnews.go.com', 'nbcnews.com', 'cbsnews.com', 'cnn.com', 'people.com', 'variety.com', 'hollywoodreporter.com', 'billboard.com', 'ew.com', 'deadline.com', 'rollingstone.com', 'theguardian.com', 'cnbc.com', 'npr.org', 'bop.gov', 'justice.gov'}
+NEWS_DOMAINS.update({'parade.com','grammy.com','oscars.org','universalmusic.com','warnermusic.com','sonymusic.com'})
+
+
+def name_words(text):
+    plain=''.join(c for c in unicodedata.normalize('NFKD',text.casefold()) if not unicodedata.combining(c))
+    return re.sub(r'[^a-z0-9]+',' ',plain).strip()
+
+
+def mentions(subject,text):
+    return ' '+name_words(subject)+' ' in ' '+name_words(text)+' '
+
+
+def reporting_priority(item,results):
+    stop={'the','a','an','and','with','from','about','to','of','for','in','on','at','as','by','new','says','show','star','after','is','it','you','his','her','he','she'}
+    words=set(name_words(item['title']).split())-stop
+    corroboration=set()
+    for other in results:
+        terms=set(name_words(other['title']).split())-stop
+        if domain(other['url'])!=domain(item['url']) and len(words&terms)/max(1,len(words|terms))>=.2:
+            corroboration.add(domain(other['url']))
+    business=any(w in name_words(item['title']).split() for w in ['licensing','signs','executives','producer','industry','deal'])
+    return len(corroboration)-.25*business
 
 NEWS_FEEDS = ['https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml',
               'https://variety.com/feed/', 'https://deadline.com/feed/',
@@ -94,16 +117,27 @@ def discover(ai, excluded: list[str]) -> list[dict]:
             if len(results)>=48:break
     if len(results) < 5:
         raise QualityBlocked('Not enough fresh, dated reporting from trusted news sources.')
-    ranking=[{k:r[k] for k in ['id','title','date']}|{'summary':r['summary'][:160]} for r in results[:36]]
-    answer = ai.json('Today is ' + now().isoformat() + '. Rank 4 DISTINCT fresh celebrity stories with substantial news value and corroboration. Prefer stories covered by multiple independent publishers, not gossip, unsupported allegations or trivial updates. Avoid these already produced topics: ' + json.dumps(excluded[-30:]) + '. Return {"topics":[{"subject":"celebrity full name","headline":"specific factual story","news_ids":[integers]}]}. Every news_id must be in this evidence. Do not change dates or invent people.\n' + json.dumps(ranking), tokens=1800)
+    ranked=sorted(results,key=lambda r:reporting_priority(r,results),reverse=True)
+    ranking=[{k:r[k] for k in ['id','title','date']}|{'summary':r['summary'][:160]} for r in ranked[:36]]
+    answer = ai.json('Today is ' + now().isoformat() + '. Rank six DISTINCT fresh celebrity stories. Prioritize widely followed people and stories corroborated by multiple publishers. Prefer substantive updates, not narrow production announcements, signing deals or industry promotions. Never repeat the same event under a second person\'s name. Avoid these already produced topics: ' + json.dumps(excluded[-30:]) + '. Return {"topics":[{"subject":"celebrity full name appearing in evidence","news_ids":[integers]}]}. Every news_id must be in this evidence. Do not invent people.\n' + json.dumps(ranking), tokens=2200)
     topics = []
+    selected_urls=set();fingerprints=set()
     for topic in answer.get('topics', []):
         ids = topic.get('news_ids', [])
-        selected = [r for r in results if r['id'] in ids]
-        if not selected or not topic.get('subject') or not topic.get('headline'):
+        subject=topic.get('subject','')
+        if not isinstance(subject,str) or not subject.strip() or not isinstance(ids,list):continue
+        selected = [r for r in ranked if r['id'] in ids and mentions(subject,r['title']+' '+r['summary'])]
+        if not selected:
             continue
+        headline=selected[0]['title']
+        selected += [r for r in ranked if r not in selected and mentions(subject,r['title']+' '+r['summary'])]
+        fingerprint=hashlib.sha256(normalized(headline).encode()).hexdigest()
+        urls={r['url'] for r in selected}
+        if fingerprint in fingerprints or urls&selected_urls:continue
+        fingerprints.add(fingerprint);selected_urls.update(urls)
+        topic['headline']=headline
         topic['discovery'] = selected
-        topic['fingerprint'] = hashlib.sha256(normalized(topic['headline']).encode()).hexdigest()
+        topic['fingerprint'] = fingerprint
         topics.append(topic)
     if not topics:
         raise QualityBlocked('No grounded celebrity topic selected from current reporting.')
@@ -163,7 +197,10 @@ def validate_facts(facts: list, sources: list) -> list:
 
 def investigate(ai, topic: dict, out) -> dict:
     urls = [x['url'] for x in topic['discovery']]
-    for query in [topic['headline'], topic['subject'] + ' ' + topic['headline'] + ' facts timeline official']:
+    queries=[topic['subject']+' '+ ' '.join(topic['headline'].split()[:10]),
+             topic['subject']+' latest news',topic['subject']+' career interview',
+             topic['subject']+' site:theguardian.com OR site:people.com OR site:bbc.com']
+    for query in queries:
         try:
             urls += [x.get('href', '') for x in DDGS(timeout=20).text(query, max_results=16)]
         except Exception as error:
@@ -171,15 +208,16 @@ def investigate(ai, topic: dict, out) -> dict:
     sources = []
     for url in dict.fromkeys(urls):
         article = fetch_article(url)
-        if article and not any(normalized(article['text'][:350]) == normalized(x['text'][:350]) for x in sources):
+        if article and mentions(topic['subject'],article['title']+' '+article['text'][:5000]) and not any(normalized(article['text'][:350]) == normalized(x['text'][:350]) for x in sources):
             article['id'] = len(sources) + 1
             sources.append(article)
         if len(sources) >= 10:
             break
     cfg = settings()
-    if len(sources) < cfg['minimum_articles'] or len({s['domain'] for s in sources}) < cfg['minimum_domains']:
-        raise QualityBlocked('Research lacks six readable articles across three independent domains.')
     save(out / 'research_sources.json', sources)
+    LOG.info('Readable research: %s articles across %s domains for %s',len(sources),len({s['domain'] for s in sources}),topic['subject'])
+    if len(sources) < cfg['minimum_articles'] or len({s['domain'] for s in sources}) < cfg['minimum_domains']:
+        raise QualityBlocked(f'Research has {len(sources)} readable articles across {len({s["domain"] for s in sources})} domains; six articles and three domains are required.')
     # Bound context to fit the 16GB PC; retain the complete retrieved articles locally.
     raw_facts=[];unknowns=[]
     for start in range(0,len(sources),2):

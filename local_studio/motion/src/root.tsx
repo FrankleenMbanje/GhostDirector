@@ -1,13 +1,16 @@
 import React from 'react';
 import {Composition, Easing, Interactive, interpolate, useCurrentFrame, useVideoConfig} from 'remotion';
+import {MapPlate,MapPoint} from './MapPlate';
+import {PhotoPlate} from './PhotoPlate';
 
 type Point={label:string;detail:string};
-type Props={headline:string; detail:string; eyebrow:string; variant:number; kind:string; points:Point[]};
+type Props={headline:string; detail:string; eyebrow:string; variant:number; kind:string; points:Point[];place?:MapPoint};
 const ink='#0d1520', paper='#eee9df', gold='#d5b383';
 const ease={extrapolateLeft:'clamp' as const,extrapolateRight:'clamp' as const,easing:Easing.bezier(.16,1,.3,1)};
 
-const GraphicInner=({headline,detail,eyebrow,variant,kind,points}:Props)=>{
+const GraphicInner=({headline,detail,eyebrow,variant,kind,points,place}:Props)=>{
  const f=useCurrentFrame();const {fps}=useVideoConfig();
+ if(kind==='map'&&place)return <MapPlate place={place}/>;
  const light=variant%3===1;
  const timeline=kind==='timeline'&&points.length>=2;
  const comparison=kind==='comparison'&&points.length>=2;
@@ -33,4 +36,7 @@ const GraphicInner=({headline,detail,eyebrow,variant,kind,points}:Props)=>{
  </>;
 };
 const GraphicPlate=Interactive.create({Component:GraphicInner,layout:'absolute-fill'});
-export const Root=()=> <Composition id="GraphicPlate" component={GraphicPlate} durationInFrames={210} fps={30} width={1920} height={1080} defaultProps={{headline:'The facts come first',detail:'Original local motion design. No paid image generation.',eyebrow:'THE FAME FILES',variant:0,kind:'statement',points:[]}}/>;
+export const Root=()=> <>
+ <Composition id="GraphicPlate" component={GraphicPlate} durationInFrames={210} fps={30} width={1920} height={1080} defaultProps={{headline:'The facts come first',detail:'Original local motion design. No paid image generation.',eyebrow:'THE FAME FILES',variant:0,kind:'statement',points:[]}}/>
+ <Composition id="PhotoPlate" component={PhotoPlate} durationInFrames={360} fps={30} width={1920} height={1080} defaultProps={{photo:'',secondPhoto:'',layout:0,label:'',archive:'ARCHIVE',seconds:10}}/>
+</>;

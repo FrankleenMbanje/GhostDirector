@@ -43,6 +43,8 @@ def upload_body(result, project, marker):
     parts += [f"{a['creator']} | {a['license']} | {a['source_page']}" for a in assets]
     parts += sorted({a.get('license_url','') for a in assets if a.get('license_url')})
     parts += ['Original motion graphics: The Fame Files. AI-assisted narration.', marker]
+    if (project/'map_sources.json').exists() and json.loads((project/'map_sources.json').read_text(encoding='utf-8')):
+        parts += ['Map boundaries: Natural Earth (public domain). Geocoding: © OpenStreetMap contributors, ODbL. https://www.openstreetmap.org/copyright']
     description = '\n'.join(parts)
     if len(description.encode('utf-8')) > 5000:
         raise QualityBlocked('Required source credits exceed YouTube description capacity; no attribution was silently removed.')
