@@ -52,3 +52,7 @@ jobs:
       - name: Check bundled map worker and WebGL video export
         working-directory: local_studio/motion
         run: npx remotion render src/index.ts GraphicPlate ../../map-check.mp4 --props=../../tests/map-fixture.json --frames=0-29 --concurrency=2 --gl=swangle --browser-executable=/usr/bin/google-chrome
+      - name: Check animated photo chapter-boundary duration
+        env:
+          PYTHONPATH: .
+        run: python tests/smoke_layout.py

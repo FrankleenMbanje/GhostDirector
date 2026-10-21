@@ -222,8 +222,17 @@ def investigate(ai, topic: dict, out) -> dict:
     raw_facts=[];unknowns=[]
     for start in range(0,len(sources),2):
         evidence=[{'id':s['id'],'title':s['title'],'text':s['text'][:4800]} for s in sources[start:start+2]]
-        answer=ai.json('Research '+topic['headline']+'. Extract 8-12 DISTINCT supported facts from this source batch, including reported background and chronology. Do not speculate. Return {"facts":[{"claim":"concise fact","evidence":[{"source_id":integer,"quote":"exact 20-220 character substring"}]}],"unknowns":[strings]}. Quotes must be exact; do not invent facts to reach a count.\n'+json.dumps(evidence),tokens=2400)
+        schema={'type':'object','additionalProperties':False,'required':['facts','unknowns'],'properties':{
+            'facts':{'type':'array','maxItems':12,'items':{'type':'object','additionalProperties':False,'required':['claim','evidence'],'properties':{
+                'claim':{'type':'string','maxLength':400},'evidence':{'type':'array','minItems':1,'maxItems':2,'items':{'type':'object','additionalProperties':False,'required':['source_id','quote'],'properties':{'source_id':{'type':'integer','enum':[x['id'] for x in evidence]},'quote':{'type':'string','minLength':20,'maxLength':220}}}}}}},
+            'unknowns':{'type':'array','maxItems':6,'items':{'type':'string','maxLength':240}}}}
+        try:
+            answer=ai.json('Research '+topic['headline']+'. Extract 8-12 DISTINCT supported facts from this source batch, including reported background and chronology. Do not speculate. Return {"facts":[{"claim":"concise fact","evidence":[{"source_id":integer,"quote":"exact 20-220 character substring"}]}],"unknowns":[strings]}. Quotes must be exact; do not invent facts to reach a count.\n'+json.dumps(evidence),tokens=2400,schema=schema)
+        except QualityBlocked as error:
+            LOG.warning('Source batch %s did not yield valid facts after bounded inference: %s',start//2+1,error)
+            continue
         raw_facts.extend(answer.get('facts',[]));unknowns.extend(answer.get('unknowns',[]))
+        save(out/'research_progress.json',{'batches_completed':start//2+1,'supported_facts':validate_facts(raw_facts,sources)})
     facts = validate_facts(raw_facts, sources)
     if len(facts) < cfg['minimum_facts']:
         raise QualityBlocked(f'Only {len(facts)} facts had exact supporting evidence; at least {cfg["minimum_facts"]} required.')

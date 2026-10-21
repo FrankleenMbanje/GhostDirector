@@ -101,6 +101,25 @@ class ProductionPolicyTests(unittest.TestCase):
         other='https://example.com/file.jpg?utm_source=required'
         self.assertEqual(canonical_media_url(other),other)
 
+    def test_failed_fact_batch_does_not_discard_other_grounded_sources_or_lower_floor(self):
+        from pathlib import Path
+        from local_studio.research import investigate
+        domains=['variety.com','deadline.com','billboard.com','bbc.com','people.com']
+        articles=[];batches=[]
+        for i in range(10):
+            facts=[{'claim':f'Jane Doe confirmed entry token{i}_{n}.','evidence':[{'source_id':i+1,'quote':f'Jane Doe confirmed entry token{i}_{n}.'}]} for n in range(4)]
+            articles.append({'url':f'https://{domains[i%5]}/story-{i}','domain':domains[i%5],'title':'Jane Doe source '+str(i),'text':' '.join(f['claim'] for f in facts)})
+            if i%2==0:batches.append({'facts':[],'unknowns':[]})
+            batches[-1]['facts'].extend(facts)
+        topic={'subject':'Jane Doe','headline':'Jane Doe sourced update','discovery':[{'url':a['url']} for a in articles]}
+        with patch('local_studio.research.save'),patch('local_studio.research.DDGS') as search,patch('local_studio.research.fetch_article',side_effect=lambda url:dict(next(a for a in articles if a['url']==url))):
+            search.return_value.text.return_value=[]
+            ai=Mock();ai.json.side_effect=[batches[0],QualityBlocked('repeat limit'),*batches[2:]]
+            result=investigate(ai,topic,Path('fixture'))
+            self.assertEqual(len(result['facts']),32)
+            ai.json.side_effect=[batches[0],*[QualityBlocked('repeat limit') for _ in range(4)]]
+            with self.assertRaisesRegex(QualityBlocked,'at least 20'):investigate(ai,topic,Path('fixture'))
+
     def test_permission_is_not_inferred_from_short_duration(self):
         self.assertTrue(accepted_license('CC BY 4.0'))
         self.assertTrue(accepted_license('Public domain'))
