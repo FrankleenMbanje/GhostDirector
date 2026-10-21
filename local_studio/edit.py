@@ -5,6 +5,7 @@ import json
 import math
 import re
 import shutil
+import sys
 from pathlib import Path
 
 from .common import LOG, PACKAGE, ROOT, QualityBlocked, browser_executable, command, duration, probe, save, settings, space_check
@@ -163,7 +164,7 @@ def render(script: dict, assets: list[dict], timing: dict, out: Path) -> Path:
             props=clips/f'{i+1:03}-props.json'
             save(props,{'headline':chapter['graphic_headline'],'detail':chapter['graphic_detail'],'eyebrow':chapter['heading'].upper()[:50],'variant':shot['chapter'],'kind':chapter.get('graphic_kind','statement'),'points':chapter.get('graphic_points',[]),'place':chapter.get('map_place')})
             cli=PACKAGE/'motion/node_modules/@remotion/cli/remotion-cli.js'
-            command(['node',str(cli),'render',str(PACKAGE/'motion/src/index.ts'),'GraphicPlate',str(target),'--props',str(props),'--frames',f'0-{shot["frames"]-1}','--concurrency=2','--crf=18','--gl=angle','--browser-executable='+browser_executable()],cwd=PACKAGE/'motion')
+            command(['node',str(cli),'render',str(PACKAGE/'motion/src/index.ts'),'GraphicPlate',str(target),'--props',str(props),'--frames',f'0-{shot["frames"]-1}','--concurrency=2','--crf=18','--gl='+('swangle' if sys.platform.startswith('linux') else 'angle'),'--browser-executable='+browser_executable()],cwd=PACKAGE/'motion')
         elif shot['kind']=='photo' and shot.get('mode')=='photo_led':
             props=clips/f'{i+1:03}-props.json'
             asset=asset_map[shot['asset_id']]
