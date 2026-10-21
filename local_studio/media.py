@@ -35,6 +35,17 @@ def plain(value):
 
     return BeautifulSoup(value or '', 'html.parser').get_text(' ', strip=True)
 
+def creator_credit(value):
+    parsed=BeautifulSoup(value or '', 'html.parser')
+    name=parsed.get_text(' ',strip=True)
+    if name and not re.fullmatch(r'\[\d+\]',name):return name
+    for link in parsed.find_all('a',href=True):
+        url=link['href']
+        if url.startswith('//'):url='https:'+url
+        if urlparse(url).scheme=='https' and urlparse(url).hostname:return url
+    return name
+
+
 def accepted_license(name: str) -> bool:
 
     value = name.casefold().strip()
@@ -97,7 +108,7 @@ def candidates(subject: str, media_type: str) -> list[dict]:
 
         original = re.search(r'(?:youtu\.be/|youtube\.com/watch\?v=)([\w-]{11})', credit)
 
-        result.append({'id': str(page['pageid']), 'origin_id': 'youtube:' + original[1] if original else 'commons:' + str(page['pageid']), 'kind': 'video' if media_type == 'video' else 'photo', 'role':'subject','provider':'commons','title': page['title'], 'subject': subject, 'url': url, 'source_page': info.get('descriptionurl', ''), 'creator': field('Artist'), 'license': license_name, 'license_url': field('LicenseUrl'), 'archive_date': field('DateTimeOriginal') or field('DateTime'), 'description': field('ImageDescription')[:1800], 'size': info.get('size', 0)})
+        result.append({'id': str(page['pageid']), 'origin_id': 'youtube:' + original[1] if original else 'commons:' + str(page['pageid']), 'kind': 'video' if media_type == 'video' else 'photo', 'role':'subject','provider':'commons','title': page['title'], 'subject': subject, 'url': url, 'source_page': info.get('descriptionurl', ''), 'creator': creator_credit(meta.get('Attribution',{}).get('value') or meta.get('Artist',{}).get('value','')), 'license': license_name, 'license_url': field('LicenseUrl'), 'archive_date': field('DateTimeOriginal') or field('DateTime'), 'description': field('ImageDescription')[:1800], 'size': info.get('size', 0)})
 
     return result
 

@@ -209,6 +209,43 @@ def validate_facts(facts: list, sources: list) -> list:
     return result
 
 
+def additional_facts(ai,topic,sources,existing):
+    """Use source-owned excerpt IDs so a small model need not retype exact quotations."""
+    previous=[normalized(f['claim']) for f in existing]
+    used_quotes={normalized(e['quote']) for f in existing for e in f.get('evidence',[])}
+    pools=[]
+    for source in sources:
+        excerpts=[]
+        for sentence in re.findall(r'[^.!?]+[.!?]?',source['text']):
+            sentence=sentence.strip()
+            for start in range(0,len(sentence),190):
+                quote=sentence[start:start+210].strip()
+                if len(quote)<20 or normalized(quote) in used_quotes:continue
+                words=set(normalized(quote).split())
+                overlap=max((len(words&set(old.split()))/max(1,len(words|set(old.split()))) for old in previous),default=0)
+                excerpts.append({'source_id':source['id'],'quote':quote,'novelty':1-overlap+.35*mentions(topic['subject'],quote)})
+        pools.append(sorted(excerpts,key=lambda x:x['novelty'],reverse=True)[:8])
+    excerpts=[]
+    for i in range(8):
+        for pool in pools:
+            if i<len(pool):excerpts.append(pool[i])
+            if len(excerpts)>=32:break
+        if len(excerpts)>=32:break
+    if not excerpts:return []
+    for i,row in enumerate(excerpts):row['id']=i+1
+    schema={'type':'object','additionalProperties':False,'required':['facts'],'properties':{'facts':{'type':'array','maxItems':10,'items':{'type':'object','additionalProperties':False,'required':['claim','excerpt_ids'],'properties':{'claim':{'type':'string','maxLength':350},'excerpt_ids':{'type':'array','minItems':1,'maxItems':2,'items':{'type':'integer','enum':[r['id'] for r in excerpts]}}}}}}}
+    answer=ai.json('Find up to ten NEW distinct supported facts relevant to '+topic['subject']+' and this story: '+topic['headline']+'. Existing claims must not be repeated: '+json.dumps([f['claim'] for f in existing])+'. Use the supplied excerpt IDs as evidence. Do not retype quotes. Do not invent details to reach a count. Background is allowed only when it explains this current story; omit unrelated personal-life details. Attribute personal statements and critical opinions. Ignore advertising or unrelated people. Return {"facts":[{"claim":"concise supported fact","excerpt_ids":[integers]}]}. Excerpts: '+json.dumps([{k:r[k] for k in ['id','source_id','quote']} for r in excerpts]),tokens=1600,schema=schema)
+    lookup={r['id']:r for r in excerpts};raw=[]
+    for item in answer.get('facts',[]):
+        evidence=[{'source_id':lookup[i]['source_id'],'quote':lookup[i]['quote']} for i in item.get('excerpt_ids',[]) if isinstance(i,int) and i in lookup]
+        raw.append({'claim':item.get('claim',''),'evidence':evidence})
+    checked=validate_facts(raw,sources)
+    if not checked:return []
+    schema={'type':'object','additionalProperties':False,'required':['supported_ids'],'properties':{'supported_ids':{'type':'array','maxItems':10,'items':{'type':'integer','enum':[f['id'] for f in checked]}}}}
+    review=ai.json('Review each proposed fact against its exact evidence and the existing facts. Keep only claims fully supported by their own quoted evidence and genuinely new in meaning. Reject speculation, mismatched details, opinions presented as objective facts, and paraphrases of existing facts. Return {"supported_ids":[fact IDs]}. Existing facts: '+json.dumps([f['claim'] for f in existing])+' Proposed facts and evidence: '+json.dumps(checked),tokens=600,schema=schema)
+    return [f for f in checked if f['id'] in review.get('supported_ids',[])]
+
+
 def investigate(ai, topic: dict, out) -> dict:
     urls = [x['url'] for x in topic['discovery']]
     queries=[topic['subject']+' '+ ' '.join(topic['headline'].split()[:10]),
@@ -248,6 +285,16 @@ def investigate(ai, topic: dict, out) -> dict:
         raw_facts.extend(answer.get('facts',[]));unknowns.extend(answer.get('unknowns',[]))
         save(out/'research_progress.json',{'batches_completed':start//2+1,'supported_facts':validate_facts(raw_facts,sources)})
     facts = validate_facts(raw_facts, sources)
+    for attempt in range(2):
+        if len(facts)>=cfg.get('target_facts',cfg['minimum_facts']):break
+        try:
+            raw_facts.extend(additional_facts(ai,topic,sources,facts))
+        except QualityBlocked as error:
+            LOG.warning('Targeted evidence pass unavailable: %s',error)
+            break
+        facts=validate_facts(raw_facts,sources)
+        save(out/'research_progress.json',{'targeted_passes':attempt+1,'supported_facts':facts})
+        LOG.info('Targeted evidence pass %s: %s supported facts.',attempt+1,len(facts))
     if len(facts) < cfg['minimum_facts']:
         raise QualityBlocked(f'Only {len(facts)} facts had exact supporting evidence; at least {cfg["minimum_facts"]} required.')
     used_sources={e['source_id'] for fact in facts for e in fact['evidence']}
@@ -260,7 +307,18 @@ def investigate(ai, topic: dict, out) -> dict:
 
 def write_script(ai, research: dict, out) -> dict:
     facts = research['facts']
-    plan = ai.json('Plan an original 5-7 minute celebrity news explainer from these supported facts. Return {"title":"accurate title","thumbnail_words":["2-4 words","different 2-4 words","different 2-4 words"],"chapters":[{"heading":"short heading","fact_ids":[integers],"graphic_headline":"maximum 7 factual words","graphic_detail":"maximum 14 factual words","graphic_kind":"statement or timeline or comparison","graphic_points":[{"label":"maximum 3 factual words","detail":"maximum 6 factual words"}]}]}. Make exactly six chronological, non-repetitive chapters, including the update, supported context, implications grounded in evidence, and unknowns. Vary graphic forms: timelines only for established chronology, comparison only for supported differences. For a statement leave graphic_points empty; otherwise use 2-3 strictly factual points. Do not invent a dramatic hook or an answer not in the facts.\n' + json.dumps(research), tokens=3000)
+    prompt = ('Plan an original 5-7 minute celebrity news explainer from these supported facts. Return {"title":"accurate title","thumbnail_words":["2-4 words","different 2-4 words","different 2-4 words"],"chapters":[{"heading":"short heading","fact_ids":[integers],"graphic_headline":"maximum 7 factual words","graphic_detail":"maximum 14 factual words","graphic_kind":"statement or timeline or comparison","graphic_points":[{"label":"maximum 3 factual words","detail":"maximum 6 factual words"}]}]}. Make exactly six chronological, non-repetitive chapters. Across them use at least 16 DISTINCT supplied fact IDs; allocate 2-5 facts per chapter and avoid repeating the same fact. Include the update, supported context, implications grounded in evidence, and unknowns. Vary graphic forms: timelines only for established chronology, comparison only for supported differences. For a statement leave graphic_points empty; otherwise use 2-3 strictly factual points. Do not invent a dramatic hook or an answer not in the facts.\n' + json.dumps(research))
+    ids={f['id'] for f in facts}
+    text=lambda maximum:{'type':'string','maxLength':maximum}
+    point={'type':'object','additionalProperties':False,'required':['label','detail'],'properties':{'label':text(40),'detail':text(80)}}
+    chapter={'type':'object','additionalProperties':False,'required':['heading','fact_ids','graphic_headline','graphic_detail','graphic_kind','graphic_points'],'properties':{'heading':text(70),'fact_ids':{'type':'array','minItems':2,'maxItems':5,'items':{'type':'integer','enum':sorted(ids)}},'graphic_headline':text(100),'graphic_detail':text(160),'graphic_kind':{'type':'string','enum':['statement','timeline','comparison']},'graphic_points':{'type':'array','maxItems':3,'items':point}}}
+    schema={'type':'object','additionalProperties':False,'required':['title','thumbnail_words','chapters'],'properties':{'title':{'type':'string','minLength':10,'maxLength':100},'thumbnail_words':{'type':'array','minItems':3,'maxItems':3,'items':text(32)},'chapters':{'type':'array','minItems':6,'maxItems':6,'items':chapter}}}
+    for attempt in range(2):
+        plan=ai.json(prompt,tokens=3000,schema=schema)
+        used={i for c in plan.get('chapters',[]) for i in c.get('fact_ids',[]) if isinstance(i,int) and i in ids}
+        if len(plan.get('chapters',[]))==6 and len(used)>=16:break
+        if attempt:raise QualityBlocked('The outline does not cover sixteen distinct supported facts in six chapters.')
+        prompt+='\nRevise the outline. The previous outline covered only '+str(len(used))+' valid distinct fact IDs. Use at least 16 of '+json.dumps(sorted(ids))+' across exactly six chapters. Previous outline: '+json.dumps(plan)
     if len(plan.get('chapters', [])) != 6:
         raise QualityBlocked('Script outline must contain six substantive chapters.')
     copies=plan.get('thumbnail_words',[])
@@ -284,7 +342,7 @@ def write_script(ai, research: dict, out) -> dict:
         selected = [x for x in facts if x['id'] in chapter.get('fact_ids', [])]
         if not selected:
             raise QualityBlocked('Chapter lacks supported facts.')
-        body = ai.json('Write this chapter as original spoken narration, 140-165 words. Use only the supplied facts. No greetings, channel slogans, teasers, padding, repeated conclusions, invented quotes or claims. Attribute allegations and preserve unknowns. Return {"narration":"text", "fact_ids":[ids actually used]}.\nChapter: ' + json.dumps(chapter) + '\nSupported facts: ' + json.dumps(selected) + '\nPrevious chapter summaries (do not repeat): ' + json.dumps(previous), tokens=1300)
+        body = ai.json('Write this chapter as original spoken narration, 145-170 words. Use only the supplied facts. No greetings, channel slogans, teasers, padding, repeated conclusions, invented quotes or claims. Attribute allegations and preserve unknowns. Return {"narration":"text", "fact_ids":[ids actually used]}.\nChapter: ' + json.dumps(chapter) + '\nSupported facts: ' + json.dumps(selected) + '\nPrevious chapter summaries (do not repeat): ' + json.dumps(previous), tokens=1300)
         text = body.get('narration', '').strip()
         ids = body.get('fact_ids', [])
         if not 115 <= len(text.split()) <= 195 or not ids or not set(ids).issubset({x['id'] for x in selected}):

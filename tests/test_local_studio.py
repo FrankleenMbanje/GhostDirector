@@ -104,6 +104,12 @@ class ProductionPolicyTests(unittest.TestCase):
         result=validate_facts(facts,sources)
         self.assertEqual([x['claim'] for x in result],['A move was confirmed.'])
 
+    def test_reference_style_artist_credit_keeps_original_creator_link(self):
+        from local_studio.media import creator_credit
+        self.assertEqual(creator_credit('<a href="https://www.flickr.com/photos/example/">[1]</a>'),'https://www.flickr.com/photos/example/')
+        self.assertEqual(creator_credit('<a href="//commons.wikimedia.org/wiki/User:Photographer">Photographer</a>'),'Photographer')
+        self.assertEqual(creator_credit('<a href="javascript:bad">[1]</a>'),'[1]')
+
     def test_wikimedia_downloads_use_canonical_cacheable_urls(self):
         from local_studio.media import canonical_media_url
         original='https://upload.wikimedia.org/wikipedia/commons/a/ab/Photo.jpg'
@@ -128,8 +134,32 @@ class ProductionPolicyTests(unittest.TestCase):
             ai=Mock();ai.json.side_effect=[batches[0],QualityBlocked('repeat limit'),*batches[2:]]
             result=investigate(ai,topic,Path('fixture'))
             self.assertEqual(len(result['facts']),32)
-            ai.json.side_effect=[batches[0],*[QualityBlocked('repeat limit') for _ in range(4)]]
-            with self.assertRaisesRegex(QualityBlocked,'at least 20'):investigate(ai,topic,Path('fixture'))
+            ai.json.side_effect=[batches[0],*[QualityBlocked('repeat limit') for _ in range(4)],{'facts':[]},{'facts':[]}]
+            with self.assertRaisesRegex(QualityBlocked,'at least 16'):investigate(ai,topic,Path('fixture'))
+
+    def test_targeted_facts_can_only_cite_literal_supplied_excerpt_ids(self):
+        from local_studio.research import additional_facts
+        sources=[{'id':1,'text':'Jane Doe opened a new exhibition on Monday. The exhibition includes forty original instruments.'}]
+        ai=Mock();ai.json.side_effect=[{'facts':[{'claim':'The exhibition includes forty original instruments.','excerpt_ids':[2]},{'claim':'Invented missing citation','excerpt_ids':[9999]}]},{'supported_ids':[1]}]
+        result=additional_facts(ai,{'subject':'Jane Doe','headline':'Jane Doe opens exhibition'},sources,[])
+        self.assertEqual(len(result),1)
+        self.assertIn(result[0]['evidence'][0]['quote'],sources[0]['text'])
+        self.assertEqual(result[0]['evidence'][0]['source_id'],1)
+
+    def test_outline_repairs_missing_fact_coverage_before_narration_and_keeps_editorial_gate(self):
+        from pathlib import Path
+        from copy import deepcopy
+        from local_studio.research import write_script
+        plan={'title':'A sourced celebrity update','thumbnail_words':['LATEST UPDATE','THE FACTS','WHAT NEXT'],'chapters':[{'heading':'Chapter '+str(i),'fact_ids':[i*3+n for n in [1,2,3]],'graphic_headline':'Reported update','graphic_detail':'Based on cited reporting','graphic_kind':'statement','graphic_points':[]} for i in range(6)]}
+        bad=deepcopy(plan)
+        for chapter in bad['chapters']:chapter['fact_ids']=[1]
+        research={'facts':[{'id':i,'claim':'Supported entry '+str(i)} for i in range(1,19)]}
+        ai=Mock();ai.json.side_effect=[bad,plan,{'accurate':False,'unsupported_implications':['unsupported packaging']}]
+        with self.assertRaisesRegex(QualityBlocked,'unsupported claim'):write_script(ai,research,Path('fixture'))
+        self.assertEqual(ai.json.call_count,3)
+        self.assertIn('previous outline covered only 1',ai.json.call_args_list[1].args[0])
+        ai.json.side_effect=[bad,bad]
+        with self.assertRaisesRegex(QualityBlocked,'sixteen distinct'):write_script(ai,research,Path('fixture'))
 
     def test_permission_is_not_inferred_from_short_duration(self):
         self.assertTrue(accepted_license('CC BY 4.0'))
