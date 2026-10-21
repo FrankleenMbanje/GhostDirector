@@ -28,6 +28,9 @@ jobs:
       FAME_CHROME_EXECUTABLE: /usr/bin/google-chrome
       OLLAMA_HOST: 127.0.0.1:11434
       OLLAMA_NO_CLOUD: '1'
+      OLLAMA_NUM_PARALLEL: '1'
+      OLLAMA_MAX_LOADED_MODELS: '1'
+      OLLAMA_CONTEXT_LENGTH: '8192'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -65,6 +68,7 @@ jobs:
         run: |
           curl --fail --location --retry 3 https://ollama.com/install.sh -o "$RUNNER_TEMP/install-ollama.sh"
           sh "$RUNNER_TEMP/install-ollama.sh"
+          sudo systemctl stop ollama 2>/dev/null || true
           mkdir -p output/local-studio
           ollama serve > output/local-studio/model-server.log 2>&1 &
           for attempt in $(seq 1 30); do
@@ -72,6 +76,10 @@ jobs:
             sleep 1
           done
           python -m local_studio.bootstrap --model-only
+      - name: Verify real text and image inference
+        if: steps.channel_check.outputs.already_published != 'true'
+        timeout-minutes: 12
+        run: python -m local_studio.ai
       - name: Research and produce a local review
         if: steps.channel_check.outputs.already_published != 'true'
         run: python -m local_studio --daily
@@ -86,6 +94,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python -m local_studio.cloud_package
+      - name: Runtime diagnostics
+        if: always()
+        run: |
+          free -m
+          ollama ps || true
+          tail -100 output/local-studio/model-server.log || true
       - name: Save review or failure report for one day
         if: always() && hashFiles('output/cloud-download/**') != ''
         uses: actions/upload-artifact@v4

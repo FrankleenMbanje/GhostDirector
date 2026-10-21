@@ -13,7 +13,7 @@ from .common import OUTPUT, ROOT, QualityBlocked
 
 def package():
     destination = ROOT/'output/cloud-download'
-    selected = [OUTPUT/name for name in ['status.json', 'daily.log', 'doctor.json']]
+    selected = [OUTPUT/name for name in ['status.json', 'daily.log', 'doctor.json','model-server.log','ai_smoke.json']]
     allowed = {'.json', '.txt', '.srt', '.png', '.jpg'}
     for source in (OUTPUT/'runs').rglob('*'):
         if source.is_file() and source.suffix in allowed and 'timeline_media' not in source.parts:
