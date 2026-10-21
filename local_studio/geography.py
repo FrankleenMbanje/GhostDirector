@@ -24,7 +24,7 @@ def prepare_maps(ai,research,script,out):
                 time.sleep(1.1)
                 response=requests.get('https://nominatim.openstreetmap.org/search',params={'q':name,'format':'jsonv2','addressdetails':1,'limit':3},headers={'User-Agent':'FameFilesLocalStudio/1.0 (https://github.com/FrankleenMbanje/GhostDirector)'},timeout=25)
                 response.raise_for_status();stored[key]=response.json();save(cache,stored)
-            rows=[r for r in stored[key] if r.get('class') in {'place','boundary'}]
+            rows=[r for r in stored[key] if r.get('category',r.get('class')) in {'place','boundary'}]
             if not rows:continue
             # Reject ambiguous names when none of the returned administrative context is supported.
             if len(rows)>1:
