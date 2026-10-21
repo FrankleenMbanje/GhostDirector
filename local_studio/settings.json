@@ -1,7 +1,7 @@
 {
   "timezone": "Africa/Johannesburg",
   "daily_hour": 14,
-  "model": "qwen2.5:3b",
+  "model": "qwen2.5:7b-instruct",
   "vision_model": "qwen3-vl:4b-instruct",
   "ollama_url": "http://127.0.0.1:11434",
   "minimum_seconds": 300,

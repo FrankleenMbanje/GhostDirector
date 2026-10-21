@@ -57,7 +57,7 @@ def package():
         if source.suffix=='.json':
             data=json.loads(source.read_text(encoding='utf-8-sig'))
             if source.name=='research_sources.json':
-                data=[{k:s[k] for k in ['id','url','title','domain','retrieved_at'] if k in s} for s in data]
+                data=[{k:s[k] for k in ['id','url','title','domain','published_at','retrieved_at'] if k in s} for s in data]
             target.write_text(json.dumps(public_research(data),indent=2,ensure_ascii=False),encoding='utf-8')
         else:shutil.copyfile(source, target)
     summary = os.environ.get('GITHUB_STEP_SUMMARY')

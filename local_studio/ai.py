@@ -50,7 +50,7 @@ class LocalAI:
         address = urlparse(self.url)
         if address.hostname not in {'127.0.0.1', 'localhost', '::1'} or address.scheme != 'http':
             raise QualityBlocked('AI must run on this PC, not a remote or paid endpoint.')
-        if self.model != 'qwen2.5:3b' or self.vision_model != 'qwen3-vl:4b-instruct':
+        if self.model != 'qwen2.5:7b-instruct' or self.vision_model != 'qwen3-vl:4b-instruct':
             raise QualityBlocked('Only the configured downloaded local model is allowed.')
 
     def ready(self):

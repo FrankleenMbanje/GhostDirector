@@ -129,7 +129,7 @@ class ProductionPolicyTests(unittest.TestCase):
             if i%2==0:batches.append({'facts':[],'unknowns':[]})
             batches[-1]['facts'].extend(facts)
         topic={'subject':'Jane Doe','headline':'Jane Doe sourced update','discovery':[{'url':a['url']} for a in articles]}
-        with patch('local_studio.research.save'),patch('local_studio.research.DDGS') as search,patch('local_studio.research.fetch_article',side_effect=lambda url:dict(next(a for a in articles if a['url']==url))):
+        with patch('local_studio.research.save'),patch('local_studio.research.curate_facts',side_effect=lambda ai,topic,sources,facts:facts),patch('local_studio.research.DDGS') as search,patch('local_studio.research.fetch_article',side_effect=lambda url:dict(next(a for a in articles if a['url']==url))):
             search.return_value.text.return_value=[]
             ai=Mock();ai.json.side_effect=[batches[0],QualityBlocked('repeat limit'),*batches[2:]]
             result=investigate(ai,topic,Path('fixture'))
@@ -160,6 +160,43 @@ class ProductionPolicyTests(unittest.TestCase):
         self.assertIn('previous outline covered only 1',ai.json.call_args_list[1].args[0])
         ai.json.side_effect=[bad,bad]
         with self.assertRaisesRegex(QualityBlocked,'sixteen distinct'):write_script(ai,research,Path('fixture'))
+
+    def test_publication_dates_are_distinct_from_retrieval_dates(self):
+        from bs4 import BeautifulSoup
+        from local_studio.research import publication_date
+        page=BeautifulSoup('<meta property="article:published_time" content="2026-05-20T09:00:00Z">','html.parser')
+        self.assertEqual(publication_date(page,'https://variety.com/example'),'2026-05-20')
+        self.assertEqual(publication_date(BeautifulSoup('','html.parser'),'https://variety.com/2026/05/story/'),'2026-05')
+        self.assertIsNone(publication_date(BeautifulSoup('','html.parser'),'https://variety.com/undated'))
+
+    def test_editorial_curation_keeps_original_quotes_and_rejects_invented_fact_ids(self):
+        from local_studio.research import curate_facts
+        source={'id':1,'url':'https://variety.com/2026/05/story','title':'Jane Doe announcement','published_at':'2026-05-20','text':'Jane Doe plans an exhibition for June 2026.'}
+        facts=[{'id':1,'claim':'Jane Doe will open an exhibition.','evidence':[{'source_id':1,'quote':source['text']}]}]
+        ai=Mock();ai.json.return_value={'facts':[{'claim':'In May 2026, Jane Doe announced a planned exhibition.','support_fact_ids':[1]},{'claim':'An invented update','support_fact_ids':[999]}]}
+        result=curate_facts(ai,{'headline':'Jane Doe update'},[source],facts)
+        self.assertEqual(len(result),1)
+        self.assertEqual(result[0]['evidence'],facts[0]['evidence'])
+        self.assertIn('historical reporting',ai.json.call_args.args[0])
+
+    def test_same_run_research_cache_requires_complete_original_evidence(self):
+        import json
+        from pathlib import Path
+        from copy import deepcopy
+        from local_studio.__main__ import cached_research
+        facts=[{'id':i+1,'claim':f'Jane Doe confirmed entry token{i}.','evidence':[{'source_id':i%6+1,'quote':f'Jane Doe confirmed entry token{i}.'}]} for i in range(16)]
+        sources=[{'id':i+1,'url':'https://'+['variety.com','deadline.com','bbc.com'][i%3]+'/story-'+str(i),'text':'Source '+str(i)+' '+' '.join(f['claim'] for f in facts)} for i in range(6)]
+        research={'editorial_curated':True,'topic':{'fingerprint':'verified'},'facts':facts}
+        cfg=settings()
+        with patch.object(Path,'read_text',side_effect=[json.dumps(research),json.dumps(sources)]),patch('local_studio.__main__.settings',return_value=cfg):
+            self.assertEqual(cached_research({'fingerprint':'verified'},Path('fixture'))['facts'],facts)
+        redacted=[{k:v for k,v in source.items() if k!='text'} for source in sources]
+        with patch.object(Path,'read_text',side_effect=[json.dumps(research),json.dumps(redacted)]),patch('local_studio.__main__.settings',return_value=cfg):
+            with self.assertRaisesRegex(QualityBlocked,'complete original'):cached_research({'fingerprint':'verified'},Path('fixture'))
+        broken=deepcopy(research)
+        broken['facts'][0]['evidence'][0]['quote']='Invented evidence not in a source'
+        with patch.object(Path,'read_text',side_effect=[json.dumps(broken),json.dumps(sources)]),patch('local_studio.__main__.settings',return_value=cfg):
+            with self.assertRaisesRegex(QualityBlocked,'exact evidence'):cached_research({'fingerprint':'verified'},Path('fixture'))
 
     def test_permission_is_not_inferred_from_short_duration(self):
         self.assertTrue(accepted_license('CC BY 4.0'))
