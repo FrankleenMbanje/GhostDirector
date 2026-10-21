@@ -15,6 +15,8 @@
   "candidate_attempts": 6,
   "minimum_video_originals": 3,
   "minimum_subject_video_originals": 2,
+  "allow_photo_led_edit": true,
+  "minimum_photo_led_photos": 6,
   "maximum_context_share": 0.0,
   "minimum_video_share": 0.55,
   "maximum_source_share": 0.30,

@@ -10,13 +10,52 @@ from pathlib import Path
 from .common import LOG, PACKAGE, ROOT, QualityBlocked, browser_executable, command, duration, probe, save, settings, space_check
 
 
+def plan_photo_led(assets,script,timing):
+    cfg=settings();total=timing['duration']
+    photos=[a for a in assets if a['kind']=='photo']
+    videos=[a for a in assets if a['kind']=='video' and a.get('duration',0)>=10]
+    if not cfg.get('allow_photo_led_edit') or len({p['origin_id'] for p in photos})<cfg['minimum_photo_led_photos']:
+        raise QualityBlocked('Photo-led editing requires at least six distinct genuine licensed photographs.')
+    used=collections.defaultdict(float);offsets={v['id']:2.0 for v in videos};shots=[];last=None;visible=set()
+    for chapter in timing['chapters']:
+        cursor=chapter['start'];end=chapter['end'];graphic=False;chapter_shots=0
+        while cursor<end-.02:
+            left=end-cursor
+            if not graphic and chapter_shots>=2 and left>=4:
+                seconds=min(6.5,left);shot={'kind':'graphic','origin_id':'graphic:'+str(chapter['index'])};graphic=True;visible=set()
+            else:
+                seconds=min([8.6,10.2,7.8,9.4][len(shots)%4],left)
+                beats=[c['end'] for c in timing.get('cues',[]) if cursor+5<=c['end']<=end and abs(c['end']-(cursor+seconds))<1.1]
+                if beats:seconds=min(beats,key=lambda t:abs(t-cursor-seconds))-cursor
+                if left-seconds<2:seconds=left
+                eligible=[v for v in videos if v['origin_id']!=last and v['duration']-offsets[v['id']]>=seconds and used[v['origin_id']]+seconds<=total*.22]
+                if eligible and len(shots)%5==2:
+                    asset=min(eligible,key=lambda a:used[a['origin_id']]);source_start=offsets[asset['id']];offsets[asset['id']]+=seconds+.3
+                else:
+                    asset=min((p for p in photos if p['origin_id'] not in visible),key=lambda a:used[a['origin_id']]);source_start=0
+                shot={'kind':asset['kind'],'asset_id':asset['id'],'origin_id':asset['origin_id'],'role':'subject','path':asset['path'],'source_start':source_start,'layout':len(shots)%3}
+                if asset['kind']=='photo' and shot['layout']==2:
+                    second=min((p for p in photos if p['origin_id'] not in (visible|{asset['origin_id']})),key=lambda a:used[a['origin_id']])
+                    shot.update(second_photo_id=second['id'],second_photo_path=second['path'],second_photo_origin=second['origin_id'])
+                    used[second['origin_id']]+=seconds
+                used[asset['origin_id']]+=seconds;last=asset['origin_id'];visible={asset['origin_id']}
+                if shot.get('second_photo_origin'):visible.add(shot['second_photo_origin'])
+            shot.update(mode='photo_led',chapter=chapter['index'],start=cursor,duration=seconds)
+            shots.append(shot);cursor+=seconds;chapter_shots+=1
+    validate_mix(shots,total)
+    for i,shot in enumerate(shots):
+        shot['start_frame']=round(shot['start']*cfg['fps'])
+        shot['frames']=round((shots[i+1]['start'] if i+1<len(shots) else total)*cfg['fps'])-shot['start_frame']
+    return shots
+
+
 def plan_shots(assets: list[dict], script: dict, timing: dict) -> list[dict]:
     cfg = settings()
     total = timing['duration']
     videos = [a for a in assets if a['kind'] == 'video' and a.get('duration', 0) >= 9]
     photos = [a for a in assets if a['kind'] == 'photo']
-    if len({v['origin_id'] for v in videos}) < cfg['minimum_video_originals']:
-        raise QualityBlocked('Three independently sourced moving videos are required.')
+    if len({v['origin_id'] for v in videos}) < cfg['minimum_video_originals'] or sum(max(0,v['duration']-4) for v in videos)<cfg['minimum_video_share']*total:
+        return plan_photo_led(assets,script,timing)
     offsets = {v['id']: min(max(2,v['duration']*.05),max(0,v['duration']-10)) for v in videos}
     used = collections.defaultdict(float)
     shots = []
@@ -54,7 +93,7 @@ def plan_shots(assets: list[dict], script: dict, timing: dict) -> list[dict]:
                 context_used=sum(used[v['origin_id']] for v in videos if v.get('role')=='context')
                 eligible = [v for v in videos if v['origin_id'] != last_origin and v['duration']-offsets[v['id']] >= seconds and used[v['origin_id']]+seconds <= cfg['maximum_source_share']*total and (v.get('role')!='context' or context_used+seconds<=cfg['maximum_context_share']*total)]
                 if not eligible:
-                    raise QualityBlocked('Not enough distinct clean footage to finish without loops, repeated shots or an overused source.')
+                    return plan_photo_led(assets,script,timing)
                 asset = min(eligible,key=lambda v:used[v['origin_id']])
                 source_start = offsets[asset['id']]
                 offsets[asset['id']] += seconds + .3
@@ -74,13 +113,16 @@ def plan_shots(assets: list[dict], script: dict, timing: dict) -> list[dict]:
 def validate_mix(shots: list[dict], total: float):
     cfg=settings()
     videos=[s for s in shots if s['kind']=='video']
-    if len({s['origin_id'] for s in videos}) < cfg['minimum_video_originals']:
+    photo_led=bool(shots) and all(s.get('mode')=='photo_led' for s in shots)
+    if photo_led and (not cfg.get('allow_photo_led_edit') or len({s['origin_id'] for s in shots if s['kind']=='photo'})<cfg['minimum_photo_led_photos']):
+        raise QualityBlocked('Photo-led image diversity failed.')
+    if not photo_led and len({s['origin_id'] for s in videos}) < cfg['minimum_video_originals']:
         raise QualityBlocked('Video-original diversity failed.')
-    if len({s['origin_id'] for s in videos if s.get('role','subject')=='subject'})<cfg['minimum_subject_video_originals']:
+    if not photo_led and len({s['origin_id'] for s in videos if s.get('role','subject')=='subject'})<cfg['minimum_subject_video_originals']:
         raise QualityBlocked('Too few genuine celebrity video originals.')
     if sum(s['duration'] for s in videos if s.get('role')=='context')/total>cfg['maximum_context_share']+.0001:
         raise QualityBlocked('Too much contextual stock footage.')
-    if sum(s['duration'] for s in videos)/total < cfg['minimum_video_share']:
+    if not photo_led and sum(s['duration'] for s in videos)/total < cfg['minimum_video_share']:
         raise QualityBlocked('Too little genuine moving footage.')
     if sum(s['duration'] for s in shots if s['kind']=='graphic')/total > cfg['maximum_graphics_share']:
         raise QualityBlocked('Too much graphic-only screen time.')
@@ -88,6 +130,7 @@ def validate_mix(shots: list[dict], total: float):
     intervals=collections.defaultdict(list)
     for s in shots:
         if s['kind'] != 'graphic':by_origin[s['origin_id']]+=s['duration']
+        if s.get('second_photo_origin'):by_origin[s['second_photo_origin']]+=s['duration']
         if s['kind']=='video':intervals[s['origin_id']].append((s['source_start'],s['source_start']+s['duration']))
     if any(v/total > cfg['maximum_source_share']+.0001 for v in by_origin.values()):
         raise QualityBlocked('One original dominates the mix.')
@@ -105,15 +148,29 @@ def render(script: dict, assets: list[dict], timing: dict, out: Path) -> Path:
     shutil.copyfile(ROOT/'assets/fonts/Montserrat-Bold.ttf',out/'render-font.ttf')
     labeled_sources=set()
     asset_map={a['id']:a for a in assets}
+    public=out/'render_assets';public.mkdir(exist_ok=True)
+    if any(s.get('mode')=='photo_led' for s in shots):
+        from PIL import Image,ImageOps
+        for a in assets:
+            if a['kind']=='photo':
+                with Image.open(a['path']) as source:
+                    image=ImageOps.exif_transpose(source).convert('RGB');image.thumbnail((2400,1800));image.save(public/(a['id']+'.jpg'),quality=95)
     for i,shot in enumerate(shots):
         space_check()
         target=clips/f'{i+1:03}.mp4';shot['rendered_file']=str(target)
         if shot['kind']=='graphic':
             chapter=script['chapters'][shot['chapter']]
             props=clips/f'{i+1:03}-props.json'
-            save(props,{'headline':chapter['graphic_headline'],'detail':chapter['graphic_detail'],'eyebrow':chapter['heading'].upper()[:50],'variant':shot['chapter'],'kind':chapter.get('graphic_kind','statement'),'points':chapter.get('graphic_points',[])})
+            save(props,{'headline':chapter['graphic_headline'],'detail':chapter['graphic_detail'],'eyebrow':chapter['heading'].upper()[:50],'variant':shot['chapter'],'kind':chapter.get('graphic_kind','statement'),'points':chapter.get('graphic_points',[]),'place':chapter.get('map_place')})
             cli=PACKAGE/'motion/node_modules/@remotion/cli/remotion-cli.js'
-            command(['node',str(cli),'render',str(PACKAGE/'motion/src/index.ts'),'GraphicPlate',str(target),'--props',str(props),'--frames',f'0-{shot["frames"]-1}','--concurrency=2','--crf=18','--browser-executable='+browser_executable()],cwd=PACKAGE/'motion')
+            command(['node',str(cli),'render',str(PACKAGE/'motion/src/index.ts'),'GraphicPlate',str(target),'--props',str(props),'--frames',f'0-{shot["frames"]-1}','--concurrency=2','--crf=18','--gl=angle','--browser-executable='+browser_executable()],cwd=PACKAGE/'motion')
+        elif shot['kind']=='photo' and shot.get('mode')=='photo_led':
+            props=clips/f'{i+1:03}-props.json'
+            asset=asset_map[shot['asset_id']]
+            year=re.search(r'\b(?:19|20)\d{2}\b',asset.get('archive_date',''))
+            save(props,{'photo':asset['id']+'.jpg','secondPhoto':shot.get('second_photo_id',asset['id'])+'.jpg','layout':shot['layout'],'label':script['chapters'][shot['chapter']]['heading'],'archive':'ARCHIVE'+(' '+year[0] if year else ''),'seconds':shot['frames']/fps})
+            cli=PACKAGE/'motion/node_modules/@remotion/cli/remotion-cli.js'
+            command(['node',str(cli),'render',str(PACKAGE/'motion/src/index.ts'),'PhotoPlate',str(target),'--props',str(props),'--frames',f'0-{shot["frames"]-1}','--public-dir',str(public),'--concurrency=2','--crf=18','--browser-executable='+browser_executable()],cwd=PACKAGE/'motion')
         else:
             args=['ffmpeg','-hide_banner','-loglevel','error','-y']
             if shot['kind']=='photo':args+=['-loop','1','-framerate',str(fps)]
@@ -150,6 +207,6 @@ def render(script: dict, assets: list[dict], timing: dict, out: Path) -> Path:
     measured=duration(final)
     if measured<cfg['minimum_seconds'] or measured>cfg['maximum_seconds'] or 'black_start:' in audit.stderr:
         raise QualityBlocked('Final duration or blank-picture check failed.')
-    save(out/'quality_report.json',{'status':'local_review_ready','duration_seconds':measured,'full_decode':'pass','blank_intervals':0,'video_originals':len({s['origin_id'] for s in shots if s['kind']=='video'}),'picture_clips':len(shots),'automatic_publication':False,'human_review':'Review picture, narration and rights before publishing; automated screening is not a guarantee.'})
+    save(out/'quality_report.json',{'status':'local_review_ready','visual_mode':shots[0].get('mode','footage_led'),'duration_seconds':measured,'full_decode':'pass','blank_intervals':0,'video_originals':len({s['origin_id'] for s in shots if s['kind']=='video'}),'moving_video_seconds':sum(s['duration'] for s in shots if s['kind']=='video'),'picture_clips':len(shots),'automatic_publication':False,'human_review':'Review picture, narration and rights before publishing; automated screening is not a guarantee.'})
     command(['ffmpeg','-hide_banner','-loglevel','error','-y','-i',str(final),'-vf',f'fps=1/{max(1,measured/12)},scale=480:-1,tile=4x3','-frames:v','1',str(out/'contact_sheet.png')])
     return final

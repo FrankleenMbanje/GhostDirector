@@ -125,6 +125,23 @@ class ProductionPolicyTests(unittest.TestCase):
         timing={'duration':330,'chapters':[{'index':i,'start':i*55,'end':(i+1)*55} for i in range(6)]}
         with self.assertRaises(QualityBlocked):plan_shots(assets,{},timing)
 
+    def test_approved_photo_led_edit_has_diverse_gapless_visuals(self):
+        assets=[{'id':str(i),'origin_id':'photo-'+str(i),'kind':'photo','path':'fixture.jpg'} for i in range(8)]
+        timing={'duration':330,'chapters':[{'index':i,'start':i*55,'end':(i+1)*55} for i in range(6)]}
+        shots=plan_shots(assets,{},timing)
+        self.assertEqual(sum(s['frames'] for s in shots),9900)
+        self.assertTrue(all(s['mode']=='photo_led' for s in shots))
+        visible=set()
+        for shot in shots:
+            current={shot['origin_id']}
+            if shot.get('second_photo_origin'):current.add(shot['second_photo_origin'])
+            self.assertFalse(visible & current)
+            visible=current if shot['kind']!='graphic' else set()
+        validate_mix(shots,330)
+        cfg=settings();cfg['allow_photo_led_edit']=False
+        with patch('local_studio.edit.settings',return_value=cfg):
+            with self.assertRaises(QualityBlocked):plan_shots(assets,{},timing)
+
     def test_offline_caption_chunks_remain_readable(self):
         text='A long explanation should remain readable, with natural pauses and complete facts instead of dozens of tiny words flashing across the screen.'
         chunks=phrases(text)

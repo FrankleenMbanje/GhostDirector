@@ -56,3 +56,5 @@ desktop.ini
 .idea/
 .vscode/
 .freebuff/
+
+local_studio/motion/public/maplibre/
