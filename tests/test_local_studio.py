@@ -104,6 +104,12 @@ class ProductionPolicyTests(unittest.TestCase):
         result=validate_facts(facts,sources)
         self.assertEqual([x['claim'] for x in result],['A move was confirmed.'])
 
+    def test_reference_style_artist_credit_keeps_original_creator_link(self):
+        from local_studio.media import creator_credit
+        self.assertEqual(creator_credit('<a href="https://www.flickr.com/photos/example/">[1]</a>'),'https://www.flickr.com/photos/example/')
+        self.assertEqual(creator_credit('<a href="//commons.wikimedia.org/wiki/User:Photographer">Photographer</a>'),'Photographer')
+        self.assertEqual(creator_credit('<a href="javascript:bad">[1]</a>'),'[1]')
+
     def test_wikimedia_downloads_use_canonical_cacheable_urls(self):
         from local_studio.media import canonical_media_url
         original='https://upload.wikimedia.org/wikipedia/commons/a/ab/Photo.jpg'
