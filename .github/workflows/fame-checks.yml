@@ -26,6 +26,10 @@ jobs:
         env:
           PYTHONPATH: .
         run: python tests/smoke_voice.py
+      - name: Check actual licensed archive downloading from GitHub
+        env:
+          PYTHONPATH: .
+        run: python tests/smoke_media.py
   checks:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

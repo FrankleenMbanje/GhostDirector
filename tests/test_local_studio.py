@@ -93,6 +93,14 @@ class ProductionPolicyTests(unittest.TestCase):
         result=validate_facts(facts,sources)
         self.assertEqual([x['claim'] for x in result],['A move was confirmed.'])
 
+    def test_wikimedia_downloads_use_canonical_cacheable_urls(self):
+        from local_studio.media import canonical_media_url
+        original='https://upload.wikimedia.org/wikipedia/commons/a/ab/Photo.jpg'
+        self.assertEqual(canonical_media_url(original+'?utm_source=commons&utm_campaign=imageinfo'),original)
+        self.assertEqual(canonical_media_url(original+'?download=1&utm_source=commons'),original+'?download=1')
+        other='https://example.com/file.jpg?utm_source=required'
+        self.assertEqual(canonical_media_url(other),other)
+
     def test_permission_is_not_inferred_from_short_duration(self):
         self.assertTrue(accepted_license('CC BY 4.0'))
         self.assertTrue(accepted_license('Public domain'))
