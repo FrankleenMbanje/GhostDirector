@@ -47,6 +47,9 @@ def load_package(path):
         raise QualityBlocked('Editorial topic fingerprint is invalid.')
     if [f.get('id') for f in data['facts']]!=list(range(1,len(data['facts'])+1)):
         raise QualityBlocked('Editorial facts need stable sequential identifiers.')
+    visual_ids=data.get('visual_source_ids')
+    if visual_ids is not None and (not isinstance(visual_ids,list) or not 6<=len(visual_ids)<=12 or len(set(visual_ids))!=len(visual_ids) or any(not isinstance(i,str) or not i.isdecimal() for i in visual_ids)):
+        raise QualityBlocked('Editorial visual shortlist must contain six to twelve distinct Commons page IDs.')
     preferred=data.get('thumbnail_preferences',[])
     if not isinstance(preferred,list) or len(preferred)>5 or any(not isinstance(i,str) or len(i)>100 for i in preferred):
         raise QualityBlocked('Editorial thumbnail preferences are invalid.')

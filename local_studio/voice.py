@@ -7,6 +7,7 @@ import hashlib
 import json
 import html
 import wave
+import subprocess
 from pathlib import Path
 
 from .common import LOG, RUNTIME, QualityBlocked, command, duration, save, settings
@@ -76,6 +77,16 @@ def narrate(script: dict,out: Path) -> dict:
     return narrate_kokoro(script,out)
 
 
+class IncompleteNarration(QualityBlocked):
+    pass
+
+
+def complete_word_timing(words,text):
+    if not isinstance(words,list) or len(words)<len(text.split())*.65 or any(not isinstance(w,dict) or not isinstance(w.get('word'),str) for w in words):return False
+    clean=lambda value:re.sub(r'[^\w]','',value.casefold())
+    return clean(''.join(w['word'] for w in words))==clean(text)
+
+
 async def collect_edge_stream(communicator,timeout_seconds=180):
     parts=[];words=[]
     # Websocket keepalives must not leave a chapter waiting indefinitely.
@@ -83,7 +94,7 @@ async def collect_edge_stream(communicator,timeout_seconds=180):
         async for item in communicator.stream():
             if item['type']=='audio':parts.append(item['data'])
             elif item['type']=='WordBoundary':words.append({'start':item['offset']/1e7,'end':(item['offset']+item['duration'])/1e7,'word':html.unescape(item['text'])})
-    if not parts or not words:raise QualityBlocked('Narration or timing was not returned; no silent voice fallback.')
+    if not parts or not words:raise IncompleteNarration('Narration or timing was not returned; no silent voice fallback.')
     return parts,words
 
 
@@ -95,26 +106,37 @@ async def narrate_edge(script: dict,out: Path) -> dict:
         LOG.info('Narration chapter %s/6',index+1)
         target=audio/f'{index+1:02}.mp3'; cache=target.with_suffix('.timing.json')
         key=hashlib.sha256((chapter['narration']+cfg['voice']+cfg.get('voice_rate','-4%')).encode()).hexdigest()
-        stored=json.loads(cache.read_text()) if cache.exists() else {}
-        if target.exists() and stored.get('key')==key and stored.get('audio_sha256')==hashlib.sha256(target.read_bytes()).hexdigest():
+        stored=json.loads(cache.read_text(encoding='utf-8')) if cache.exists() else {}
+        if target.exists() and stored.get('key')==key and stored.get('audio_sha256')==hashlib.sha256(target.read_bytes()).hexdigest() and complete_word_timing(stored.get('words'),chapter['narration']) and duration(target)+.6>=max(w['end'] for w in stored['words']):
             words=stored['words']
         else:
             for attempt in range(3):
                 parts=[];words=[]
                 connector=aiohttp.TCPConnector(family=socket.AF_INET) if attempt else None
+                partial=target.with_suffix('.partial.mp3')
                 try:
                     communicator=edge_tts.Communicate(chapter['narration'],voice=cfg['voice'],rate=cfg.get('voice_rate','-4%'),boundary='WordBoundary',connector=connector,connect_timeout=20,receive_timeout=90)
                     parts,words=await collect_edge_stream(communicator)
-                    target.write_bytes(b''.join(parts))
+                    if not complete_word_timing(words,chapter['narration']):
+                        raise IncompleteNarration('Narration word timing is incomplete; retrying the whole chapter.')
+                    partial.write_bytes(b''.join(parts))
+                    try:
+                        audio_seconds=duration(partial)
+                    except (subprocess.CalledProcessError,ValueError) as error:
+                        raise IncompleteNarration('Narration audio was incomplete or unreadable.') from error
+                    if audio_seconds+.6<max(w['end'] for w in words):
+                        raise IncompleteNarration('Narration audio ended before its last timed word.')
+                    partial.replace(target)
                     save(cache,{'key':key,'audio_sha256':hashlib.sha256(target.read_bytes()).hexdigest(),'words':words})
                     break
-                except (aiohttp.ClientError,asyncio.TimeoutError):
+                except (aiohttp.ClientError,asyncio.TimeoutError,IncompleteNarration,edge_tts.exceptions.NoAudioReceived):
                     if attempt==2:raise QualityBlocked('Free narration service is unavailable after bounded network retries.') from None
-                    LOG.warning('Voice connection interrupted; retry %s/2',attempt+1)
+                    LOG.warning('Voice response incomplete or interrupted; retry %s/2',attempt+1)
                     await asyncio.sleep(2)
                 finally:
+                    partial.unlink(missing_ok=True)
                     if connector is not None:await connector.close()
-        if len(words)<len(chapter['narration'].split())*.65:
+        if not complete_word_timing(words,chapter['narration']):
             raise QualityBlocked('Narration word timing appears incomplete.')
         wav=target.with_suffix('.wav')
         command(['ffmpeg','-hide_banner','-loglevel','error','-y','-i',str(target),'-c:a','pcm_s16le','-ar','48000',str(wav)])

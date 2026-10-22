@@ -83,7 +83,7 @@ class ProductionPolicyTests(unittest.TestCase):
         self.assertEqual(cues[0]['text'],'Visuals that belong to the subject.')
 
     def test_watermark_uncertainty_and_nonfinite_identity_never_pass(self):
-        good={'subject_present':True,'identity_confidence':.95,'publisher_or_stock_brand_visible':False,'faces_framed_well':True,'clear_usable_picture':True,'uncertain':False}
+        good={'subject_present':True,'real_subject_in_scene':True,'subject_is_primary_focus':True,'brand_text':[],'identity_confidence':.95,'publisher_or_stock_brand_visible':False,'faces_framed_well':True,'clear_usable_picture':True,'uncertain':False}
         self.assertTrue(usable_subject(good))
         for change in [{'publisher_or_stock_brand_visible':True},{'publisher_or_stock_brand_visible':'false'},{'uncertain':True},{'identity_confidence':float('nan')},{'identity_confidence':.4}]:
             self.assertFalse(usable_subject({**good,**change}))

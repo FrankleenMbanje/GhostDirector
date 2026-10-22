@@ -8,16 +8,20 @@ import shutil
 import sys
 from pathlib import Path
 
-from .common import LOG, PACKAGE, ROOT, QualityBlocked, browser_executable, command, duration, probe, save, settings, space_check
+from .motion_cli import run_motion
+from .common import LOG, PACKAGE, ROOT, QualityBlocked, browser_executable, command, duration, probe, save, settings, space_check, hybrid_sources
 
 
 def plan_photo_led(assets,script,timing):
     cfg=settings();total=timing['duration']
     photos=[a for a in assets if a['kind']=='photo']
     videos=[a for a in assets if a['kind']=='video' and a.get('duration',0)>=10]
-    if not cfg.get('allow_photo_led_edit') or len({p['origin_id'] for p in photos})<cfg['minimum_photo_led_photos']:
-        raise QualityBlocked('Photo-led editing requires at least six distinct genuine licensed photographs.')
-    used=collections.defaultdict(float);offsets={v['id']:2.0 for v in videos};shots=[];last=None;visible=set()
+    offsets={v['id']:min(max(2,v['duration']*.05),max(0,v['duration']-10)) for v in videos}
+    hybrid=hybrid_sources(assets,cfg) and sum(min(max(0,v['duration']-offsets[v['id']]),total*.22) for v in videos)>=cfg['minimum_hybrid_video_share']*total
+    if not hybrid and (not cfg.get('allow_photo_led_edit') or len({p['origin_id'] for p in photos})<cfg['minimum_photo_led_photos']):
+        raise QualityBlocked('A photo-led edit needs six photos; a hybrid needs four photos, two video originals and enough genuine moving footage.')
+    mode='hybrid' if hybrid else 'photo_led'
+    used=collections.defaultdict(float);shots=[];last=None;visible=set()
     for chapter in timing['chapters']:
         cursor=chapter['start'];end=chapter['end'];graphic=False;chapter_shots=0
         while cursor<end-.02:
@@ -30,7 +34,7 @@ def plan_photo_led(assets,script,timing):
                 if beats:seconds=min(beats,key=lambda t:abs(t-cursor-seconds))-cursor
                 if left-seconds<2:seconds=left
                 eligible=[v for v in videos if v['origin_id']!=last and v['duration']-offsets[v['id']]>=seconds and used[v['origin_id']]+seconds<=total*.22]
-                if eligible and len(shots)%5==2:
+                if eligible and (len(shots)%2==0 if hybrid else len(shots)%5==2):
                     asset=min(eligible,key=lambda a:used[a['origin_id']]);source_start=offsets[asset['id']];offsets[asset['id']]+=seconds+.3
                 else:
                     asset=min((p for p in photos if p['origin_id'] not in visible),key=lambda a:used[a['origin_id']]);source_start=0
@@ -41,7 +45,7 @@ def plan_photo_led(assets,script,timing):
                     used[second['origin_id']]+=seconds
                 used[asset['origin_id']]+=seconds;last=asset['origin_id'];visible={asset['origin_id']}
                 if shot.get('second_photo_origin'):visible.add(shot['second_photo_origin'])
-            shot.update(mode='photo_led',chapter=chapter['index'],start=cursor,duration=seconds)
+            shot.update(mode=mode,chapter=chapter['index'],start=cursor,duration=seconds)
             shots.append(shot);cursor+=seconds;chapter_shots+=1
     validate_mix(shots,total)
     for i,shot in enumerate(shots):
@@ -115,15 +119,18 @@ def validate_mix(shots: list[dict], total: float):
     cfg=settings()
     videos=[s for s in shots if s['kind']=='video']
     photo_led=bool(shots) and all(s.get('mode')=='photo_led' for s in shots)
+    hybrid=bool(shots) and all(s.get('mode')=='hybrid' for s in shots)
+    if hybrid and (not hybrid_sources(shots,cfg) or sum(s['duration'] for s in videos)/total<cfg['minimum_hybrid_video_share']):
+        raise QualityBlocked('Hybrid source diversity or genuine moving footage failed.')
     if photo_led and (not cfg.get('allow_photo_led_edit') or len({s['origin_id'] for s in shots if s['kind']=='photo'})<cfg['minimum_photo_led_photos']):
         raise QualityBlocked('Photo-led image diversity failed.')
-    if not photo_led and len({s['origin_id'] for s in videos}) < cfg['minimum_video_originals']:
+    if not photo_led and not hybrid and len({s['origin_id'] for s in videos}) < cfg['minimum_video_originals']:
         raise QualityBlocked('Video-original diversity failed.')
-    if not photo_led and len({s['origin_id'] for s in videos if s.get('role','subject')=='subject'})<cfg['minimum_subject_video_originals']:
+    if not photo_led and not hybrid and len({s['origin_id'] for s in videos if s.get('role','subject')=='subject'})<cfg['minimum_subject_video_originals']:
         raise QualityBlocked('Too few genuine celebrity video originals.')
     if sum(s['duration'] for s in videos if s.get('role')=='context')/total>cfg['maximum_context_share']+.0001:
         raise QualityBlocked('Too much contextual stock footage.')
-    if not photo_led and sum(s['duration'] for s in videos)/total < cfg['minimum_video_share']:
+    if not photo_led and not hybrid and sum(s['duration'] for s in videos)/total < cfg['minimum_video_share']:
         raise QualityBlocked('Too little genuine moving footage.')
     if sum(s['duration'] for s in shots if s['kind']=='graphic')/total > cfg['maximum_graphics_share']:
         raise QualityBlocked('Too much graphic-only screen time.')
@@ -150,7 +157,7 @@ def render(script: dict, assets: list[dict], timing: dict, out: Path) -> Path:
     labeled_sources=set()
     asset_map={a['id']:a for a in assets}
     public=out/'render_assets';public.mkdir(exist_ok=True)
-    if any(s.get('mode')=='photo_led' for s in shots):
+    if any(s.get('mode') in {'photo_led','hybrid'} for s in shots):
         from PIL import Image,ImageOps
         for a in assets:
             if a['kind']=='photo':
@@ -164,14 +171,14 @@ def render(script: dict, assets: list[dict], timing: dict, out: Path) -> Path:
             props=clips/f'{i+1:03}-props.json'
             save(props,{'headline':chapter['graphic_headline'],'detail':chapter['graphic_detail'],'eyebrow':chapter['heading'].upper()[:50],'variant':shot['chapter'],'kind':chapter.get('graphic_kind','statement'),'points':chapter.get('graphic_points',[]),'place':chapter.get('map_place')})
             cli=PACKAGE/'motion/node_modules/@remotion/cli/remotion-cli.js'
-            command(['node',str(cli),'render',str(PACKAGE/'motion/src/index.ts'),'GraphicPlate',str(target),'--props',str(props),'--frames',f'0-{shot["frames"]-1}','--concurrency=2','--crf=18','--gl='+('swangle' if sys.platform.startswith('linux') else 'angle'),'--browser-executable='+browser_executable()],cwd=PACKAGE/'motion')
-        elif shot['kind']=='photo' and shot.get('mode')=='photo_led':
+            run_motion(['node',str(cli),'render',str(PACKAGE/'motion/src/index.ts'),'GraphicPlate',str(target),'--props',str(props),'--frames',f'0-{shot["frames"]-1}','--concurrency=2','--crf=18','--gl='+('swangle' if sys.platform.startswith('linux') else 'angle'),'--browser-executable='+browser_executable()],cwd=PACKAGE/'motion')
+        elif shot['kind']=='photo' and shot.get('mode') in {'photo_led','hybrid'}:
             props=clips/f'{i+1:03}-props.json'
             asset=asset_map[shot['asset_id']]
             year=re.search(r'\b(?:19|20)\d{2}\b',asset.get('archive_date',''))
             save(props,{'photo':asset['id']+'.jpg','secondPhoto':shot.get('second_photo_id',asset['id'])+'.jpg','layout':shot['layout'],'label':script['chapters'][shot['chapter']]['heading'],'archive':'ARCHIVE'+(' '+year[0] if year else ''),'seconds':shot['frames']/fps})
             cli=PACKAGE/'motion/node_modules/@remotion/cli/remotion-cli.js'
-            command(['node',str(cli),'render',str(PACKAGE/'motion/src/index.ts'),'PhotoPlate',str(target),'--props',str(props),'--frames',f'0-{shot["frames"]-1}','--public-dir',str(public),'--concurrency=2','--crf=18','--browser-executable='+browser_executable()],cwd=PACKAGE/'motion')
+            run_motion(['node',str(cli),'render',str(PACKAGE/'motion/src/index.ts'),'PhotoPlate',str(target),'--props',str(props),'--frames',f'0-{shot["frames"]-1}','--public-dir',str(public),'--concurrency=2','--crf=18','--gl='+('swangle' if sys.platform.startswith('linux') else 'angle'),'--browser-executable='+browser_executable()],cwd=PACKAGE/'motion')
         else:
             args=['ffmpeg','-hide_banner','-loglevel','error','-y']
             if shot['kind']=='photo':args+=['-loop','1','-framerate',str(fps)]

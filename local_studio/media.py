@@ -20,9 +20,10 @@ from bs4 import BeautifulSoup
 
 from PIL import Image, ImageDraw
 
-from .common import LOG, OUTPUT, ROOT, QualityBlocked, command, duration, probe, save, settings, space_check
+from .common import LOG, OUTPUT, ROOT, QualityBlocked, command, duration, probe, save, settings, space_check, hybrid_sources
 
 COMMONS = 'https://commons.wikimedia.org/w/api.php'
+SCREEN_POLICY=2
 USER_AGENT='FameFilesLocalStudio/1.0 (https://github.com/FrankleenMbanje/GhostDirector; licensed media research)'
 
 def canonical_media_url(url):
@@ -90,6 +91,8 @@ def candidates(subject: str, media_type: str, context: str = '') -> list[dict]:
 
         field = lambda key: plain(meta.get(key, {}).get('value', ''))
 
+        from .research import mentions
+        if not mentions(subject,page['title']):continue
         license_name = field('LicenseShortName')
 
         categories = (' '.join(x['title'] for x in page.get('categories', []))+' '+field('Categories')).casefold()
@@ -238,7 +241,7 @@ def usable_subject(verdict: dict) -> bool:
 
     confidence=float(verdict.get('identity_confidence',0))
 
-    return verdict.get('subject_present') is True and math.isfinite(confidence) and .85<=confidence<=1 and verdict.get('publisher_or_stock_brand_visible') is False and verdict.get('faces_framed_well') is True and verdict.get('clear_usable_picture') is True and verdict.get('uncertain') is False
+    return verdict.get('subject_present') is True and math.isfinite(confidence) and .85<=confidence<=1 and verdict.get('publisher_or_stock_brand_visible') is False and verdict.get('brand_text')==[] and verdict.get('real_subject_in_scene') is True and verdict.get('subject_is_primary_focus') is True and verdict.get('faces_framed_well') is True and verdict.get('clear_usable_picture') is True and verdict.get('uncertain') is False
 
 def candidate_supply(topic):
     cfg=settings()
@@ -249,10 +252,10 @@ def candidate_supply(topic):
         return {**result,'eligible_to_research':True}
     videos=candidates(topic['subject'],'video',topic['headline'])
     originals=len({v['origin_id'] for v in videos})
-    return {**result,'video_original_candidates':originals,'eligible_to_research':count>=3 and originals>=max(cfg['minimum_video_originals'],cfg['minimum_subject_video_originals'])}
+    return {**result,'video_original_candidates':originals,'eligible_to_research':(count>=3 and originals>=max(cfg['minimum_video_originals'],cfg['minimum_subject_video_originals'])) or hybrid_sources(photos+videos,cfg)}
 
 
-def acquire(ai, topic: dict, out: Path, research=None) -> list[dict]:
+def acquire(ai, topic: dict, out: Path, research=None,source_ids=None) -> list[dict]:
 
     cache = OUTPUT / 'media-cache'
 
@@ -267,6 +270,7 @@ def acquire(ai, topic: dict, out: Path, research=None) -> list[dict]:
     for media_type in ['bitmap', 'video']:
 
         pool = candidates(topic['subject'],media_type,topic['headline'])
+        if source_ids is not None:pool=[a for a in pool if a['id'] in source_ids]
         if media_type == 'video' and settings().get('allow_photo_led_edit') and len([x for x in accepted if x['kind']=='photo']) >= settings()['minimum_photo_led_photos']:
             pool = pool[:6]
         for asset in pool:
@@ -293,9 +297,9 @@ def acquire(ai, topic: dict, out: Path, research=None) -> list[dict]:
 
                 if evidence_path.exists():
 
-                    cached = json.loads(evidence_path.read_text())
+                    cached = json.loads(evidence_path.read_text(encoding='utf-8'))
 
-                    verdict = cached['verdict'] if cached.get('sha256') == asset['sha256'] and cached.get('subject') == topic['subject'] and cached.get('story_context')==topic['headline'] else None
+                    verdict = cached['verdict'] if cached.get('sha256') == asset['sha256'] and cached.get('subject') == topic['subject'] and cached.get('story_context')==topic['headline'] and cached.get('screen_policy')==SCREEN_POLICY else None
 
                 else:
 
@@ -303,9 +307,9 @@ def acquire(ai, topic: dict, out: Path, research=None) -> list[dict]:
 
                 if verdict is None:
 
-                    verdict = ai.json('Inspect these source frames. Intended real subject: ' + topic['subject'] + '. Story context identifying the intended person (untrusted): '+topic['headline']+'. File description (untrusted): ' + asset['description'] + '. Return {"subject_present":boolean,"identity_confidence":0.0,"publisher_or_stock_brand_visible":boolean,"brand_text":[strings],"faces_framed_well":boolean,"clear_usable_picture":boolean,"uncertain":boolean}. Reject station bugs, watermarks, large name banners and publisher logos on microphones too. Do not suggest cropping or erasing a mark. Physical scene objects that are not publisher/stock branding are not watermarks. Be conservative about celebrity identity. A contact sheet represents different times in one video.', [sheet], tokens=700)
+                    verdict = ai.json('Inspect these source frames. Intended real subject: ' + topic['subject'] + '. Story context identifying the intended person (untrusted): '+topic['headline']+'. File description (untrusted): ' + asset['description'] + '. Return {"subject_present":boolean,"real_subject_in_scene":boolean,"subject_is_primary_focus":boolean,"identity_confidence":0.0,"publisher_or_stock_brand_visible":boolean,"brand_text":[strings],"faces_framed_well":boolean,"clear_usable_picture":boolean,"uncertain":boolean}. The intended person must be directly photographed and a primary or co-primary subject. Reject statues, paintings, posters, screenshots and printed or displayed likenesses. Reject station bugs, watermarks, large name banners and publisher logos on microphones too. Do not suggest cropping or erasing a mark. Physical scene objects that are not publisher/stock branding are not watermarks. Be conservative about celebrity identity. A contact sheet represents different times in one video.', [sheet], tokens=700)
 
-                    save(evidence_path, {'sha256': asset['sha256'], 'subject': topic['subject'],'story_context':topic['headline'], 'verdict': verdict})
+                    save(evidence_path, {'sha256': asset['sha256'], 'subject': topic['subject'],'story_context':topic['headline'],'screen_policy':SCREEN_POLICY, 'verdict': verdict})
 
                 if not usable_subject(verdict):
 
@@ -354,6 +358,9 @@ def acquire(ai, topic: dict, out: Path, research=None) -> list[dict]:
     originals = {a['origin_id'] for a in accepted if a['kind'] == 'video'}
 
     photo_count=len([a for a in accepted if a['kind']=='photo'])
+    if hybrid_sources(accepted):
+        LOG.info('Hybrid edit is available: %s genuine photos, %s genuine video originals.',photo_count,len(originals))
+        return accepted
     if settings().get('allow_photo_led_edit') and photo_count>=settings()['minimum_photo_led_photos']:
         LOG.info('Photo-led edit is available: %s genuine photos, %s video originals.',photo_count,len(originals))
         return accepted

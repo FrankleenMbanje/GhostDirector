@@ -144,7 +144,7 @@ def daily(research_only=False,continue_research=False,editorial_package=None):
                         state('research_complete','Research saved','Supported sources and facts saved; no video was produced.',project=str(out))
                         return 0
                     state('running','Checking visuals','Finding multiple clean licensed video originals and genuine photographs.',project=str(out))
-                    assets=acquire(ai,topic,out,research)
+                    assets=acquire(ai,topic,out,research,source_ids=bundle.get('visual_source_ids') if bundle else None)
                     state('running','Writing','Building a substantive long-form explanation from the documented facts.',project=str(out))
                     if bundle:
                         from .editorial import prepared_script
