@@ -106,7 +106,7 @@ async def narrate_edge(script: dict,out: Path) -> dict:
         LOG.info('Narration chapter %s/6',index+1)
         target=audio/f'{index+1:02}.mp3'; cache=target.with_suffix('.timing.json')
         key=hashlib.sha256((chapter['narration']+cfg['voice']+cfg.get('voice_rate','-4%')).encode()).hexdigest()
-        stored=json.loads(cache.read_text()) if cache.exists() else {}
+        stored=json.loads(cache.read_text(encoding='utf-8')) if cache.exists() else {}
         if target.exists() and stored.get('key')==key and stored.get('audio_sha256')==hashlib.sha256(target.read_bytes()).hexdigest() and complete_word_timing(stored.get('words'),chapter['narration']) and duration(target)+.6>=max(w['end'] for w in stored['words']):
             words=stored['words']
         else:

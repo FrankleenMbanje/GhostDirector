@@ -297,7 +297,7 @@ def acquire(ai, topic: dict, out: Path, research=None,source_ids=None) -> list[d
 
                 if evidence_path.exists():
 
-                    cached = json.loads(evidence_path.read_text())
+                    cached = json.loads(evidence_path.read_text(encoding='utf-8'))
 
                     verdict = cached['verdict'] if cached.get('sha256') == asset['sha256'] and cached.get('subject') == topic['subject'] and cached.get('story_context')==topic['headline'] and cached.get('screen_policy')==SCREEN_POLICY else None
 
