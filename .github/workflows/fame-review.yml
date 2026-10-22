@@ -8,6 +8,11 @@ on:
         required: false
         type: string
         default: ''
+      preview_only:
+        description: Validate automatic production without YouTube access or uploading
+        required: false
+        type: boolean
+        default: false
   schedule:
     # 12:00 UTC = 14:00 South Africa. GitHub can delay scheduled jobs.
     - cron: '0 12 * * *'
@@ -17,7 +22,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: fame-cloud-review
+  group: fame-cloud-${{ inputs.preview_only && 'preview' || 'review' }}
   cancel-in-progress: false
 
 jobs:
@@ -31,6 +36,7 @@ jobs:
     timeout-minutes: 350
     env:
       FAME_EDITORIAL_PACKAGE: ${{ inputs.editorial_package }}
+      FAME_PREVIEW_ONLY: ${{ inputs.preview_only && 'true' || 'false' }}
       PYTHONUNBUFFERED: '1'
       FAME_CHROME_EXECUTABLE: /usr/bin/google-chrome
       OLLAMA_VERSION: '0.40.7'
@@ -61,6 +67,7 @@ jobs:
           python -m unittest discover -s tests -q
           npm run check --prefix local_studio/motion
       - name: Verify The Fame Files publishing credential
+        if: inputs.preview_only != true
         id: channel_check
         env:
           FAME_PUBLISH_UNLISTED: 'true'
@@ -114,7 +121,7 @@ jobs:
           if [ -n "$FAME_EDITORIAL_PACKAGE" ]; then args+=(--editorial-package "$FAME_EDITORIAL_PACKAGE"); fi
           python -m local_studio --daily --continue-research "${args[@]}"
       - name: Upload checked video as unlisted only
-        if: steps.channel_check.outputs.already_published != 'true'
+        if: steps.channel_check.outputs.already_published != 'true' && inputs.preview_only != true
         env:
           FAME_PUBLISH_UNLISTED: 'true'
           GD_YOUTUBE_TOKEN: ${{ secrets.GD_YOUTUBE_TOKEN }}

@@ -22,6 +22,11 @@ class CloudPublishTests(unittest.TestCase):
             with self.assertRaises(QualityBlocked):
                 service()
 
+    def test_preview_cannot_publish_even_with_the_authorized_cloud_switch(self):
+        with patch.dict(os.environ,{'GITHUB_ACTIONS':'true','GITHUB_REPOSITORY':'FrankleenMbanje/GhostDirector','FAME_PUBLISH_UNLISTED':'true','FAME_PREVIEW_ONLY':'true'}):
+            with self.assertRaisesRegex(QualityBlocked,'Preview runs cannot access YouTube'):
+                service()
+
     def test_insert_is_unlisted_and_preserves_credits_without_public_schedule(self):
         Path('output').mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir='output') as directory:

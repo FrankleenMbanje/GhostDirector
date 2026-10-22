@@ -236,7 +236,7 @@ def validate_facts(facts: list, sources: list) -> list:
             quote = support.get('quote', '')
             supported=literal_support(quote,source_map[sid]['text']) if sid in source_map and isinstance(quote,str) and 20<=len(quote)<=220 else None
             if supported:
-                good.append({'source_id': sid, 'quote': supported})
+                good.append({'source_id':sid,'quote':supported,**({'published_at':source_map[sid]['published_at']} if source_map[sid].get('published_at') else {})})
         key = normalized(claim)
         tokens=set(key.split())
         near_duplicate=any(len(tokens & set(old.split())) / max(1,len(tokens | set(old.split()))) > .82 for old in seen)
@@ -246,21 +246,86 @@ def validate_facts(facts: list, sources: list) -> list:
     return result
 
 
-def curate_facts(ai,topic,sources,facts):
-    if not facts:return []
-    lookup={f['id']:f for f in facts};dates={s['id']:{'published_at':s.get('published_at'),'url':s['url'],'title':s['title']} for s in sources}
-    schema={'type':'object','additionalProperties':False,'required':['facts'],'properties':{'facts':{'type':'array','maxItems':min(32,len(facts)),'items':{'type':'object','additionalProperties':False,'required':['claim','support_fact_ids'],'properties':{'claim':{'type':'string','maxLength':260},'support_fact_ids':{'type':'array','minItems':1,'maxItems':3,'items':{'type':'integer','enum':list(lookup)}}}}}}}
-    answer=ai.json('Today is '+now().date().isoformat()+'. Edit a factual research brief about '+topic['headline']+'. Consolidate claims that mean the SAME thing even with different words. Keep only distinct, relevant claims fully supported by the exact quoted evidence. Preserve attribution of personal statements and critical opinions. Treat older articles as historical reporting: do not repeat their future-tense announcements as future news today. Prefer later reporting when it confirms an event already happened. You may rewrite a claim only to correct tense, attribution or duplication using its cited evidence and supplied source dates. Do not combine different facts into compound claims, invent updates, diagnoses, motives or causal explanations. support_fact_ids must point to existing facts supporting that same claim. Return {"facts":[{"claim":"accurate distinct claim","support_fact_ids":[integers]}]}. Source publication dates and URLs: '+json.dumps(dates)+' Facts with exact evidence: '+json.dumps(facts),tokens=3000,schema=schema)
+def source_excerpts(sources):
+    rows=[]
+    for source in sources:
+        owned=[];seen=set()
+        for paragraph in source['text'][:10000].splitlines():
+            words=paragraph.split();window=[]
+            def emit():
+                quote=literal_support(' '.join(window),source['text']) if window else None
+                if quote and normalized(quote) not in seen:
+                    seen.add(normalized(quote));owned.append({'source_id':source['id'],'published_at':source.get('published_at'),'quote':quote,'context':paragraph[:110]})
+            for word in words:
+                if window and len(' '.join(window+[word]))>210:
+                    emit();window=window[-2:]
+                window.append(word)
+            emit()
+        if len(owned)>20:
+            indices=set(range(6))
+            indices.update(6+round(i*(len(owned)-7)/13) for i in range(14))
+            owned=[owned[i] for i in sorted(indices)]
+        rows.extend(owned)
+    for i,row in enumerate(rows,1):row['id']=i
+    return rows
+
+
+def extract_batch(ai,topic,sources):
+    excerpts=source_excerpts(sources)
+    if not excerpts:return {'facts':[],'unknowns':[]}
+    lookup={e['id']:e for e in excerpts}
+    schema={'type':'object','additionalProperties':False,'required':['facts','unknowns'],'properties':{
+        'facts':{'type':'array','maxItems':12,'items':{'type':'object','additionalProperties':False,'required':['claim','excerpt_ids'],'properties':{'claim':{'type':'string','maxLength':300},'excerpt_ids':{'type':'array','minItems':1,'maxItems':2,'items':{'type':'integer','enum':list(lookup)}}}}},
+        'unknowns':{'type':'array','maxItems':4,'items':{'type':'string','maxLength':140}}}}
+    metadata=[{k:s.get(k) for k in ['id','title','url','published_at']} for s in sources]
+    answer=ai.json('Today is '+now().date().isoformat()+'. Build a detailed factual brief about '+topic['headline']+'. Extract 8-12 distinct claims if this evidence supports them, not a three-point summary. Include relevant biography, dated milestones, each separate performer/song pairing, collaborations and specific actions. Keep only facts about the named subject or this event; omit generic medical or industry explainers. Use a concise original paraphrase for each claim. Cite supplied excerpt_ids instead of retyping quotations. Each claim must be fully supported by its selected excerpt(s). Preserve attribution of personal statements and opinions. Treat older announcements as historical reporting; do not present their dates as still upcoming. Do not include song lyrics. Return fewer facts or an empty array when evidence is insufficient; never invent to fill a count. Context fields help identify speakers but are not additional claim licenses. Source metadata: '+json.dumps(metadata)+' Owned excerpts: '+json.dumps(excerpts),tokens=1900,schema=schema)
     raw=[]
     for item in answer.get('facts',[]):
-        evidence=[];seen=set()
-        for identity in item.get('support_fact_ids',[]):
-            if type(identity) is not int or identity not in lookup:continue
-            for e in lookup[identity]['evidence']:
-                key=(e['source_id'],e['quote'])
-                if key not in seen:evidence.append(e);seen.add(key)
-        raw.append({'claim':item.get('claim',''),'evidence':evidence[:2]})
-    result=validate_facts(raw,sources)
+        evidence=[]
+        cited=item.get('excerpt_ids',[])
+        if not cited or any(type(i) is not int or i not in lookup for i in cited):continue
+        for identity in dict.fromkeys(cited):
+            row=lookup[identity];evidence.append({'source_id':row['source_id'],'quote':row['quote']})
+        raw.append({'claim':item.get('claim',''),'evidence':evidence})
+    facts=validate_facts(raw,sources)
+    LOG.info('Excerpt extraction: %s proposed claims, %s with original source evidence.',len(answer.get('facts',[])),len(facts))
+    return {'facts':facts,'unknowns':answer.get('unknowns',[])}
+
+
+def curate_facts(ai,topic,sources,facts):
+    if not facts:return []
+    source_map={s['id']:s for s in sources};kept=[]
+    for start in range(0,len(facts),10):
+        batch=facts[start:start+10];ids={f['id'] for f in batch};previous={f['id'] for f in kept}
+        records=[]
+        for fact in batch:
+            evidence=[]
+            for support in fact['evidence']:
+                source=source_map[support['source_id']];position=source['text'].find(support['quote'])
+                evidence.append({**support,'published_at':source.get('published_at'),'context':source['text'][max(0,position-140):position] if position>=0 else ''})
+            records.append({'id':fact['id'],'claim':fact['claim'],'evidence':evidence})
+        schema={'type':'object','additionalProperties':False,'required':['decisions'],'properties':{'decisions':{'type':'array','minItems':len(batch),'maxItems':len(batch),'items':{'type':'object','additionalProperties':False,'required':['fact_id','status','revised_claim','duplicate_of'],'properties':{'fact_id':{'type':'integer','enum':sorted(ids)},'status':{'type':'string','enum':['keep','duplicate','unsupported']},'revised_claim':{'type':'string','maxLength':300},'duplicate_of':{'type':'integer','enum':sorted({0}|ids|previous)}}}}}}
+        prompt=('Today is '+now().date().isoformat()+'. Review EACH supplied fact about '+topic['headline']+'. This is not a summary: retain every distinct relevant claim with support. Different performers, songs, dates, actions and career milestones are separate facts even when related. Mark duplicate only when it says the same thing as a kept fact; give that fact ID. Mark unsupported for a claim not established by its quote/context, an invented inference, or unrelated background. Preserve attribution of personal statements and critical opinions. Treat older articles as historical reporting: correct future-tense announcements using their publication dates; do not assume an announced event happened without later evidence. revised_claim should be empty when the original is accurate, otherwise correct only tense or attribution. Do not add new information or song lyrics. Return one decision per supplied fact ID. Previously kept claims: '+json.dumps([{'id':f['id'],'claim':f['claim']} for f in kept])+' Facts and source context: '+json.dumps(records))
+        decisions=None
+        for attempt in range(2):
+            answer=ai.json(prompt,tokens=2000,schema=schema)
+            rows=answer.get('decisions',[])
+            if len(rows)==len(batch) and all(isinstance(r,dict) and type(r.get('fact_id')) is int and type(r.get('duplicate_of')) is int for r in rows) and {r.get('fact_id') for r in rows}==ids:
+                decisions={r['fact_id']:r for r in rows};break
+            prompt+='\nThe previous response did not review every required ID exactly once. Required IDs: '+json.dumps(sorted(ids))
+        if decisions is None:raise QualityBlocked('Editorial review omitted or invented fact decisions.')
+        retained=previous|{i for i,d in decisions.items() if d.get('status')=='keep'}
+        for fact in batch:
+            decision=decisions[fact['id']];status=decision.get('status')
+            if status=='keep':
+                if decision.get('duplicate_of')!=0:raise QualityBlocked('Editorial keep decision has a conflicting duplicate reference.')
+                kept.append({**fact,'claim':decision.get('revised_claim','').strip() or fact['claim']})
+            elif status=='duplicate':
+                target=decision.get('duplicate_of')
+                if target not in retained or target==fact['id']:raise QualityBlocked('Editorial duplicate does not point to a retained fact.')
+            elif status!='unsupported':raise QualityBlocked('Unknown editorial fact decision.')
+        LOG.info('Editorial decisions: reviewed %s/%s claims; %s retained.',min(start+10,len(facts)),len(facts),len(kept))
+    result=validate_facts(kept,sources)
     LOG.info('Editorial fact curation: %s extracted claims, %s distinct dated claims.',len(facts),len(result))
     return result
 
@@ -352,13 +417,8 @@ def investigate(ai, topic: dict, out) -> dict:
     # Bound context to fit the 16GB PC; retain the complete retrieved articles locally.
     raw_facts=[];unknowns=[]
     for start in range(0,len(sources),2):
-        evidence=[{'id':s['id'],'title':s['title'],'published_at':s.get('published_at'),'url':s['url'],'purpose':s.get('purpose','reporting'),'text':s['text'][:4800]} for s in sources[start:start+2]]
-        schema={'type':'object','additionalProperties':False,'required':['facts','unknowns'],'properties':{
-            'facts':{'type':'array','maxItems':12,'items':{'type':'object','additionalProperties':False,'required':['claim','evidence'],'properties':{
-                'claim':{'type':'string','maxLength':400},'evidence':{'type':'array','minItems':1,'maxItems':2,'items':{'type':'object','additionalProperties':False,'required':['source_id','quote'],'properties':{'source_id':{'type':'integer','enum':[x['id'] for x in evidence]},'quote':{'type':'string','minLength':20,'maxLength':220}}}}}}},
-            'unknowns':{'type':'array','maxItems':6,'items':{'type':'string','maxLength':240}}}}
         try:
-            answer=ai.json('Today is '+now().date().isoformat()+'. Research '+topic['headline']+'. Preserve each source publication date: historical announcements are past reporting, never automatically current or future news. Extract 8-12 DISTINCT supported facts from this source batch, including reported background and chronology. Do not speculate. Return {"facts":[{"claim":"concise fact","evidence":[{"source_id":integer,"quote":"exact 20-220 character substring"}]}],"unknowns":[strings]}. Quotes must be exact; do not invent facts to reach a count.\n'+json.dumps(evidence),tokens=2400,schema=schema)
+            answer=extract_batch(ai,topic,sources[start:start+2])
         except QualityBlocked as error:
             LOG.warning('Source batch %s did not yield valid facts after bounded inference: %s',start//2+1,error)
             continue
