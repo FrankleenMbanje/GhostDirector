@@ -97,7 +97,7 @@ def daily(research_only=False,continue_research=False,editorial_package=None):
             if not health['ready']:
                 raise QualityBlocked('; '.join(health['problems']))
             from .research import discover, investigate, write_script
-            from .media import acquire
+            from .media import acquire,candidate_supply
             from .voice import narrate
             from .edit import render
             from .thumbnail import create_variants
@@ -135,6 +135,9 @@ def daily(research_only=False,continue_research=False,editorial_package=None):
                         from .editorial import prepare_research
                         research=prepare_research(bundle,out)
                     else:
+                        supply=candidate_supply(topic);save(out/'media_candidate_supply.json',supply)
+                        if not supply['eligible_to_research']:
+                            raise QualityBlocked('The archive has too few eligible original candidates for this topic; choosing another story before full research.')
                         research=investigate(ai,topic,out)
                     if research_only:
                         save(OUTPUT/'runs'/day/'research_ready.json',{'fingerprint':topic['fingerprint'],'github_run_id':os.environ.get('GITHUB_RUN_ID')})

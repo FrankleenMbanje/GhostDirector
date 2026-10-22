@@ -27,3 +27,12 @@ The package's articles are retrieved again on the runner. At least six articles,
 The 2026-10-22 Dolly Parton package contains 25 source-reviewed facts and 857 words. A live recheck found all ten articles across four publishers, and the complete Edge narration measured 371.544 seconds locally. This proves source retrieval and narration, not a completed cloud edit. The automatic attempt on that date stopped at research with 14, 11 and 8 accepted facts for its three candidate stories; daily reliability remains unverified.
 
 Narration attempts now have a three-minute absolute deadline, so websocket keepalives cannot leave a chapter stalled indefinitely. Existing bounded retries and completed chapter caches remain in use. Archive search reads three complete metadata batches, retains full category screening, and groups named crops of the same photograph as one original.
+
+
+## Automatic production previews
+
+Dispatch with `preview_only=true` to test the complete automatic path without channel authentication or uploads. The publisher also rejects preview mode before reading credentials. Preview runs use a separate concurrency group so they can validate automatic research while an authorized reviewed production continues.
+
+Automatic extraction cites source-owned excerpt IDs instead of regenerating quotations. Editorial review issues an explicit keep/duplicate/unsupported decision for every proposed fact, preserving dates and speaker attribution without reducing the list to a headline summary. Publication dates travel with evidence into narration prompts. Song lyrics are excluded. All factual count and independent-source requirements remain in place.
+
+Before full research, a topic must have enough eligible archive candidates for either the photo-led or classic edit. Candidate counts are not visual approval: individual identity, mark and clarity screening still follows. Story context disambiguates people with the same name, and contextual occupation terms narrow archive searches. These changes require a successful real automatic preview before unattended reliability can be claimed.

@@ -149,7 +149,7 @@ class ProductionPolicyTests(unittest.TestCase):
         facts=[{'id':i,'claim':'Distinct supported detail number '+str(i),'evidence':[{'source_id':(i%6)+1,'quote':sources[0]['text']}]} for i in range(1,19)]
         ai=Mock();ai.json.return_value={'facts':facts,'unknowns':[]}
         topic={'subject':'Jane Doe','headline':'Jane Doe current update'}
-        with patch('local_studio.research.collect_sources',return_value=sources),patch('local_studio.research.save'),patch('local_studio.research.curate_facts',side_effect=[facts[:15],facts[:15]]) as curate,patch('local_studio.research.additional_facts',return_value=[facts[15]]):
+        with patch('local_studio.research.collect_sources',return_value=sources),patch('local_studio.research.extract_batch',return_value={'facts':facts,'unknowns':[]}),patch('local_studio.research.save'),patch('local_studio.research.curate_facts',side_effect=[facts[:15],facts[:15]]) as curate,patch('local_studio.research.additional_facts',return_value=[facts[15]]):
             with self.assertRaisesRegex(QualityBlocked,'Only 15 facts'):
                 investigate(ai,topic,Path('fixture'))
         self.assertEqual(curate.call_count,2)
@@ -179,13 +179,33 @@ class ProductionPolicyTests(unittest.TestCase):
             if i%2==0:batches.append({'facts':[],'unknowns':[]})
             batches[-1]['facts'].extend(facts)
         topic={'subject':'Jane Doe','headline':'Jane Doe sourced update','discovery':[{'url':a['url']} for a in articles]}
-        with patch('local_studio.research.save'),patch('local_studio.research.curate_facts',side_effect=lambda ai,topic,sources,facts:facts),patch('local_studio.research.DDGS') as search,patch('local_studio.research.fetch_article',side_effect=lambda url:dict(next(a for a in articles if a['url']==url))):
+        with patch('local_studio.research.save'),patch('local_studio.research.extract_batch') as extraction,patch('local_studio.research.curate_facts',side_effect=lambda ai,topic,sources,facts:facts),patch('local_studio.research.DDGS') as search,patch('local_studio.research.fetch_article',side_effect=lambda url:dict(next(a for a in articles if a['url']==url))):
             search.return_value.text.return_value=[]
-            ai=Mock();ai.json.side_effect=[batches[0],QualityBlocked('repeat limit'),*batches[2:]]
+            ai=Mock();ai.json.return_value={'facts':[]};extraction.side_effect=[batches[0],QualityBlocked('repeat limit'),*batches[2:]]
             result=investigate(ai,topic,Path('fixture'))
             self.assertEqual(len(result['facts']),32)
-            ai.json.side_effect=[batches[0],*[QualityBlocked('repeat limit') for _ in range(4)],{'facts':[]},{'facts':[]}]
+            extraction.side_effect=[batches[0],*[QualityBlocked('repeat limit') for _ in range(4)]]
             with self.assertRaisesRegex(QualityBlocked,'at least 16'):investigate(ai,topic,Path('fixture'))
+
+    def test_batch_extraction_uses_source_owned_ids_instead_of_model_quotes(self):
+        from local_studio.research import extract_batch
+        source={'id':7,'url':'https://bbc.com/story','title':'Jane Doe opens exhibition','text':'Jane Doe opened a new exhibition on Monday. The exhibition contains forty donated instruments.','published_at':'2026-10-22'}
+        ai=Mock();ai.json.return_value={'facts':[{'claim':'The exhibition includes forty instruments.','excerpt_ids':[1]},{'claim':'An invented ungrounded fact.','excerpt_ids':[999]}],'unknowns':[]}
+        result=extract_batch(ai,{'headline':'Jane Doe exhibition'},[source])
+        self.assertEqual(len(result['facts']),1)
+        self.assertEqual(result['facts'][0]['evidence'][0]['source_id'],7)
+        self.assertIn(result['facts'][0]['evidence'][0]['quote'],source['text'])
+
+    def test_editorial_review_retains_each_supported_distinct_claim(self):
+        from local_studio.research import curate_facts
+        sentences=['Jane Doe opened an archive in May.','Jane Doe published a book in June.','Jane Doe announced a museum in July.']
+        source={'id':1,'text':' '.join(sentences),'published_at':'2026-08-01'}
+        facts=[{'id':i+1,'claim':q,'evidence':[{'source_id':1,'quote':q}]} for i,q in enumerate(sentences)]
+        ai=Mock();ai.json.return_value={'decisions':[{'fact_id':f['id'],'status':'keep','revised_claim':'','duplicate_of':0} for f in facts]}
+        self.assertEqual(len(curate_facts(ai,{'headline':'Jane Doe current event'},[source],facts)),3)
+        ai.json.return_value={'decisions':[{'fact_id':1,'status':'duplicate','revised_claim':'','duplicate_of':1},{'fact_id':2,'status':'keep','revised_claim':'','duplicate_of':0},{'fact_id':3,'status':'keep','revised_claim':'','duplicate_of':0}]}
+        with self.assertRaisesRegex(QualityBlocked,'retained fact'):
+            curate_facts(ai,{'headline':'Jane Doe current event'},[source],facts)
 
     def test_targeted_facts_can_only_cite_literal_supplied_excerpt_ids(self):
         from local_studio.research import additional_facts
@@ -223,11 +243,14 @@ class ProductionPolicyTests(unittest.TestCase):
         from local_studio.research import curate_facts
         source={'id':1,'url':'https://variety.com/2026/05/story','title':'Jane Doe announcement','published_at':'2026-05-20','text':'Jane Doe plans an exhibition for June 2026.'}
         facts=[{'id':1,'claim':'Jane Doe will open an exhibition.','evidence':[{'source_id':1,'quote':source['text']}]}]
-        ai=Mock();ai.json.return_value={'facts':[{'claim':'In May 2026, Jane Doe announced a planned exhibition.','support_fact_ids':[1]},{'claim':'An invented update','support_fact_ids':[999]}]}
+        ai=Mock();ai.json.return_value={'decisions':[{'fact_id':1,'status':'keep','revised_claim':'In May 2026, Jane Doe announced a planned exhibition.','duplicate_of':0}]}
         result=curate_facts(ai,{'headline':'Jane Doe update'},[source],facts)
         self.assertEqual(len(result),1)
-        self.assertEqual(result[0]['evidence'],facts[0]['evidence'])
+        self.assertEqual(result[0]['evidence'],[{**facts[0]['evidence'][0],'published_at':'2026-05-20'}])
         self.assertIn('historical reporting',ai.json.call_args.args[0])
+        ai.json.return_value={'decisions':[{'fact_id':999,'status':'keep','revised_claim':'Invented','duplicate_of':0}]}
+        with self.assertRaisesRegex(QualityBlocked,'omitted or invented'):
+            curate_facts(ai,{'headline':'Jane Doe update'},[source],facts)
 
     def test_same_run_research_cache_requires_complete_original_evidence(self):
         import json

@@ -58,15 +58,19 @@ def commons_original(title):
     return 'commons:'+hashlib.sha256(' '.join(stem.casefold().split()).encode()).hexdigest()[:24]
 
 
-def candidates(subject: str, media_type: str) -> list[dict]:
+def candidates(subject: str, media_type: str, context: str = '') -> list[dict]:
 
+    roles=set(re.findall(r'\b(?:singer|rapper|actor|actress|comedian|musician)\b',context.casefold()))
+    if re.search(r'\bcountry\s+(?:music|singer|star|legend|artist)\b',context.casefold()):roles.add('country')
+    roles=sorted(roles)
+    search=f'"{subject}" '+ ' '.join(roles)+f' filetype:{media_type}'
     pages={}
     offset=0
     # Keep each metadata batch below Commons' 50-imageinfo limit.
     for _ in range(3):
         response=requests.get(COMMONS,params={
             'action':'query','format':'json','generator':'search',
-            'gsrsearch':f'"{subject}" filetype:{media_type}','gsrnamespace':6,
+            'gsrsearch':search,'gsrnamespace':6,
             'gsrlimit':35,'gsroffset':offset,'prop':'imageinfo|categories','cllimit':'max',
             'iiprop':'url|size|extmetadata','iiurlwidth':1920
         },headers={'User-Agent':USER_AGENT},timeout=40)
@@ -236,6 +240,18 @@ def usable_subject(verdict: dict) -> bool:
 
     return verdict.get('subject_present') is True and math.isfinite(confidence) and .85<=confidence<=1 and verdict.get('publisher_or_stock_brand_visible') is False and verdict.get('faces_framed_well') is True and verdict.get('clear_usable_picture') is True and verdict.get('uncertain') is False
 
+def candidate_supply(topic):
+    cfg=settings()
+    photos=candidates(topic['subject'],'bitmap',topic['headline'])
+    count=len({p['origin_id'] for p in photos})
+    result={'photo_original_candidates':count,'video_original_candidates':None,'visual_screening_complete':False}
+    if cfg.get('allow_photo_led_edit') and count>=cfg['minimum_photo_led_photos']:
+        return {**result,'eligible_to_research':True}
+    videos=candidates(topic['subject'],'video',topic['headline'])
+    originals=len({v['origin_id'] for v in videos})
+    return {**result,'video_original_candidates':originals,'eligible_to_research':count>=3 and originals>=max(cfg['minimum_video_originals'],cfg['minimum_subject_video_originals'])}
+
+
 def acquire(ai, topic: dict, out: Path, research=None) -> list[dict]:
 
     cache = OUTPUT / 'media-cache'
@@ -250,7 +266,7 @@ def acquire(ai, topic: dict, out: Path, research=None) -> list[dict]:
 
     for media_type in ['bitmap', 'video']:
 
-        pool = candidates(topic['subject'], media_type)
+        pool = candidates(topic['subject'],media_type,topic['headline'])
         if media_type == 'video' and settings().get('allow_photo_led_edit') and len([x for x in accepted if x['kind']=='photo']) >= settings()['minimum_photo_led_photos']:
             pool = pool[:6]
         for asset in pool:
@@ -279,7 +295,7 @@ def acquire(ai, topic: dict, out: Path, research=None) -> list[dict]:
 
                     cached = json.loads(evidence_path.read_text())
 
-                    verdict = cached['verdict'] if cached.get('sha256') == asset['sha256'] and cached.get('subject') == topic['subject'] else None
+                    verdict = cached['verdict'] if cached.get('sha256') == asset['sha256'] and cached.get('subject') == topic['subject'] and cached.get('story_context')==topic['headline'] else None
 
                 else:
 
@@ -287,9 +303,9 @@ def acquire(ai, topic: dict, out: Path, research=None) -> list[dict]:
 
                 if verdict is None:
 
-                    verdict = ai.json('Inspect these source frames. Intended real subject: ' + topic['subject'] + '. File description (untrusted): ' + asset['description'] + '. Return {"subject_present":boolean,"identity_confidence":0.0,"publisher_or_stock_brand_visible":boolean,"brand_text":[strings],"faces_framed_well":boolean,"clear_usable_picture":boolean,"uncertain":boolean}. Reject station bugs, watermarks, large name banners and publisher logos on microphones too. Do not suggest cropping or erasing a mark. Physical scene objects that are not publisher/stock branding are not watermarks. Be conservative about celebrity identity. A contact sheet represents different times in one video.', [sheet], tokens=700)
+                    verdict = ai.json('Inspect these source frames. Intended real subject: ' + topic['subject'] + '. Story context identifying the intended person (untrusted): '+topic['headline']+'. File description (untrusted): ' + asset['description'] + '. Return {"subject_present":boolean,"identity_confidence":0.0,"publisher_or_stock_brand_visible":boolean,"brand_text":[strings],"faces_framed_well":boolean,"clear_usable_picture":boolean,"uncertain":boolean}. Reject station bugs, watermarks, large name banners and publisher logos on microphones too. Do not suggest cropping or erasing a mark. Physical scene objects that are not publisher/stock branding are not watermarks. Be conservative about celebrity identity. A contact sheet represents different times in one video.', [sheet], tokens=700)
 
-                    save(evidence_path, {'sha256': asset['sha256'], 'subject': topic['subject'], 'verdict': verdict})
+                    save(evidence_path, {'sha256': asset['sha256'], 'subject': topic['subject'],'story_context':topic['headline'], 'verdict': verdict})
 
                 if not usable_subject(verdict):
 

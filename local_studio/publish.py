@@ -13,6 +13,8 @@ CHANNEL = 'UCkxIY_tv62QYMO5MOsBQp9w'
 
 
 def service():
+    if os.environ.get('FAME_PREVIEW_ONLY','').lower()=='true':
+        raise QualityBlocked('Preview runs cannot access YouTube or publish videos.')
     if os.environ.get('GITHUB_ACTIONS') != 'true' or os.environ.get('GITHUB_REPOSITORY') != 'FrankleenMbanje/GhostDirector' or os.environ.get('FAME_PUBLISH_UNLISTED') != 'true':
         raise QualityBlocked('Publishing requires the authorized cloud workflow and unlisted-only switch.')
     from google.oauth2.credentials import Credentials

@@ -79,6 +79,26 @@ class ArchivePaginationTests(unittest.TestCase):
         self.assertEqual(request.call_args_list[1].kwargs['params']['gsroffset'],35)
 
 
+class CandidateSupplyTests(unittest.TestCase):
+    def test_six_crops_of_one_photo_do_not_warrant_full_research(self):
+        from local_studio.media import candidate_supply
+        rows=[{'origin_id':'same-photo'} for _ in range(6)]
+        with patch('local_studio.media.candidates',side_effect=[rows,[]]):
+            result=candidate_supply({'subject':'Jane Doe','headline':'Jane Doe update'})
+        self.assertFalse(result['eligible_to_research'])
+        self.assertEqual(result['photo_original_candidates'],1)
+
+    def test_candidate_count_is_not_a_completed_visual_screen(self):
+        from local_studio.media import candidate_supply
+        rows=[{'origin_id':str(i)} for i in range(6)]
+        with patch('local_studio.media.candidates',return_value=rows) as archive:
+            result=candidate_supply({'subject':'Jane Doe','headline':'Jane Doe update'})
+        self.assertTrue(result['eligible_to_research'])
+        self.assertFalse(result['visual_screening_complete'])
+        self.assertIsNone(result['video_original_candidates'])
+        self.assertEqual(archive.call_count,1)
+
+
 class NarrationDeadlineTests(unittest.IsolatedAsyncioTestCase):
     async def test_partial_stream_is_not_accepted_after_deadline(self):
         class Stalled:
