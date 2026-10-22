@@ -8,6 +8,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from .motion_cli import run_motion
 from .common import LOG, PACKAGE, ROOT, QualityBlocked, browser_executable, command, duration, probe, save, settings, space_check, hybrid_sources
 
 
@@ -170,14 +171,14 @@ def render(script: dict, assets: list[dict], timing: dict, out: Path) -> Path:
             props=clips/f'{i+1:03}-props.json'
             save(props,{'headline':chapter['graphic_headline'],'detail':chapter['graphic_detail'],'eyebrow':chapter['heading'].upper()[:50],'variant':shot['chapter'],'kind':chapter.get('graphic_kind','statement'),'points':chapter.get('graphic_points',[]),'place':chapter.get('map_place')})
             cli=PACKAGE/'motion/node_modules/@remotion/cli/remotion-cli.js'
-            command(['node',str(cli),'render',str(PACKAGE/'motion/src/index.ts'),'GraphicPlate',str(target),'--props',str(props),'--frames',f'0-{shot["frames"]-1}','--concurrency=2','--crf=18','--gl='+('swangle' if sys.platform.startswith('linux') else 'angle'),'--browser-executable='+browser_executable()],cwd=PACKAGE/'motion')
+            run_motion(['node',str(cli),'render',str(PACKAGE/'motion/src/index.ts'),'GraphicPlate',str(target),'--props',str(props),'--frames',f'0-{shot["frames"]-1}','--concurrency=2','--crf=18','--gl='+('swangle' if sys.platform.startswith('linux') else 'angle'),'--browser-executable='+browser_executable()],cwd=PACKAGE/'motion')
         elif shot['kind']=='photo' and shot.get('mode') in {'photo_led','hybrid'}:
             props=clips/f'{i+1:03}-props.json'
             asset=asset_map[shot['asset_id']]
             year=re.search(r'\b(?:19|20)\d{2}\b',asset.get('archive_date',''))
             save(props,{'photo':asset['id']+'.jpg','secondPhoto':shot.get('second_photo_id',asset['id'])+'.jpg','layout':shot['layout'],'label':script['chapters'][shot['chapter']]['heading'],'archive':'ARCHIVE'+(' '+year[0] if year else ''),'seconds':shot['frames']/fps})
             cli=PACKAGE/'motion/node_modules/@remotion/cli/remotion-cli.js'
-            command(['node',str(cli),'render',str(PACKAGE/'motion/src/index.ts'),'PhotoPlate',str(target),'--props',str(props),'--frames',f'0-{shot["frames"]-1}','--public-dir',str(public),'--concurrency=2','--crf=18','--browser-executable='+browser_executable()],cwd=PACKAGE/'motion')
+            run_motion(['node',str(cli),'render',str(PACKAGE/'motion/src/index.ts'),'PhotoPlate',str(target),'--props',str(props),'--frames',f'0-{shot["frames"]-1}','--public-dir',str(public),'--concurrency=2','--crf=18','--gl='+('swangle' if sys.platform.startswith('linux') else 'angle'),'--browser-executable='+browser_executable()],cwd=PACKAGE/'motion')
         else:
             args=['ffmpeg','-hide_banner','-loglevel','error','-y']
             if shot['kind']=='photo':args+=['-loop','1','-framerate',str(fps)]

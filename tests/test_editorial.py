@@ -130,6 +130,24 @@ class HybridEditTests(unittest.TestCase):
         self.assertFalse(usable_subject({**verdict,'subject_is_primary_focus':False}))
 
 
+class MotionStartupTests(unittest.TestCase):
+    def test_browser_startup_timeout_retries_once(self):
+        import subprocess
+        from local_studio.motion_cli import run_motion
+        error=subprocess.CalledProcessError(1,['node'],stderr='Timed out after 25000 ms while trying to connect to the browser!')
+        with patch('local_studio.motion_cli.command',side_effect=[error,'completed']) as command,patch('local_studio.motion_cli.time.sleep'):
+            self.assertEqual(run_motion(['node','render']),'completed')
+            self.assertEqual(command.call_count,2)
+
+    def test_real_rendering_errors_are_not_hidden_by_retry(self):
+        import subprocess
+        from local_studio.motion_cli import run_motion
+        error=subprocess.CalledProcessError(1,['node'],stderr='Unsupported graphic props')
+        with patch('local_studio.motion_cli.command',side_effect=error) as command:
+            with self.assertRaises(subprocess.CalledProcessError):run_motion(['node','render'])
+            self.assertEqual(command.call_count,1)
+
+
 class NarrationDeadlineTests(unittest.IsolatedAsyncioTestCase):
     async def test_incomplete_chapter_retries_before_audio_is_cached(self):
         from unittest.mock import AsyncMock
