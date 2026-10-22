@@ -132,6 +132,32 @@ class ProductionPolicyTests(unittest.TestCase):
         other='https://example.com/file.jpg?utm_source=required'
         self.assertEqual(canonical_media_url(other),other)
 
+    def test_fact_floor_is_checked_after_curation_of_late_additions(self):
+        from pathlib import Path
+        from local_studio.research import investigate
+        sources=[{'id':i,'domain':d,'url':'https://'+d+'/story','title':'Jane Doe','text':'Jane Doe confirmed the exact supported detail in this report.'} for i,d in enumerate(['variety.com','bbc.com','people.com','deadline.com','billboard.com','rollingstone.com'],1)]
+        facts=[{'id':i,'claim':'Distinct supported detail number '+str(i),'evidence':[{'source_id':(i%6)+1,'quote':sources[0]['text']}]} for i in range(1,19)]
+        ai=Mock();ai.json.return_value={'facts':facts,'unknowns':[]}
+        topic={'subject':'Jane Doe','headline':'Jane Doe current update'}
+        with patch('local_studio.research.collect_sources',return_value=sources),patch('local_studio.research.save'),patch('local_studio.research.curate_facts',side_effect=[facts[:15],facts[:15]]) as curate,patch('local_studio.research.additional_facts',return_value=[facts[15]]):
+            with self.assertRaisesRegex(QualityBlocked,'Only 15 facts'):
+                investigate(ai,topic,Path('fixture'))
+        self.assertEqual(curate.call_count,2)
+
+    def test_research_reserves_room_for_relevant_background(self):
+        from local_studio.research import collect_sources
+        current=[f'https://variety.com/current-{i}' for i in range(10)]
+        background=[f'https://bbc.com/background-{i}' for i in range(4)]
+        topic={'subject':'Jane Doe','headline':'Jane Doe current event','discovery':[{'url':u} for u in current]}
+        def article(url):
+            return {'url':url,'title':'Jane Doe','text':url+' Jane Doe '+('Reported detail. '*30)}
+        with patch('local_studio.research.DDGS') as search,patch('local_studio.research.fetch_article',side_effect=article):
+            search.return_value.text.side_effect=lambda query,**kwargs:[{'href':u} for u in background] if 'career' in query else []
+            sources=collect_sources(topic)
+        self.assertEqual([s['url'] for s in sources],current[:6]+background)
+        self.assertEqual([s['id'] for s in sources],list(range(1,11)))
+        self.assertEqual(sum(s['purpose']=='reported background' for s in sources),4)
+
     def test_failed_fact_batch_does_not_discard_other_grounded_sources_or_lower_floor(self):
         from pathlib import Path
         from local_studio.research import investigate

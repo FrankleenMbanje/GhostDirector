@@ -287,24 +287,48 @@ def additional_facts(ai,topic,sources,existing):
     return [f for f in checked if f['id'] in review.get('supported_ids',[])]
 
 
-def investigate(ai, topic: dict, out) -> dict:
-    urls = [x['url'] for x in topic['discovery']]
-    queries=[topic['subject']+' '+ ' '.join(topic['headline'].split()[:10]),
-             topic['subject']+' latest news',topic['subject']+' career interview',
-             topic['subject']+' site:theguardian.com OR site:people.com OR site:bbc.com']
-    for query in queries:
-        try:
-            urls += [x.get('href', '') for x in DDGS(timeout=20).text(query, max_results=16)]
-        except Exception as error:
-            LOG.warning('Follow-up research failed: %s', type(error).__name__)
-    sources = []
-    for url in dict.fromkeys(urls):
-        article = fetch_article(url)
-        if article and mentions(topic['subject'],article['title']+' '+article['text'][:5000]) and not any(normalized(article['text'][:350]) == normalized(x['text'][:350]) for x in sources):
-            article['id'] = len(sources) + 1
+def collect_sources(topic):
+    """Reserve background slots instead of filling the brief with one event."""
+    current=[x['url'] for x in topic['discovery']]
+    background=[]
+    groups=[(current,[topic['subject']+' '+ ' '.join(topic['headline'].split()[:10]),
+                      topic['subject']+' latest news',
+                      topic['subject']+' site:theguardian.com OR site:people.com OR site:bbc.com']),
+            (background,[topic['subject']+' career interview',
+                         topic['subject']+' career profile site:theguardian.com OR site:bbc.com',
+                         topic['subject']+' career achievements site:grammy.com'])]
+    for urls,queries in groups:
+        for query in queries:
+            try:
+                urls.extend(x.get('href','') for x in DDGS(timeout=20).text(query,max_results=16))
+            except Exception as error:
+                LOG.warning('Follow-up research failed: %s',type(error).__name__)
+    sources=[];visited=set()
+    def add(url,purpose):
+        if url in visited:return
+        visited.add(url)
+        article=fetch_article(url)
+        if article and mentions(topic['subject'],article['title']+' '+article['text'][:5000]) and not any(normalized(article['text'][:350])==normalized(x['text'][:350]) for x in sources):
+            article.update(id=len(sources)+1,purpose=purpose)
             sources.append(article)
-        if len(sources) >= 10:
-            break
+    current=list(dict.fromkeys(current));position=0
+    while position<len(current) and len(sources)<6:
+        add(current[position],'current reporting');position+=1
+    for url in dict.fromkeys(background):
+        if len(sources)>=10:break
+        add(url,'reported background')
+    # If searches yield no usable background, retain the remaining real reporting.
+    for url in current[position:]:
+        if len(sources)>=10:break
+        add(url,'current reporting')
+    LOG.info('Research source mix: %s current reports, %s background sources.',
+             sum(s['purpose']=='current reporting' for s in sources),
+             sum(s['purpose']=='reported background' for s in sources))
+    return sources
+
+
+def investigate(ai, topic: dict, out) -> dict:
+    sources=collect_sources(topic)
     cfg = settings()
     save(out / 'research_sources.json', sources)
     LOG.info('Readable research: %s articles across %s domains for %s',len(sources),len({s['domain'] for s in sources}),topic['subject'])
@@ -313,7 +337,7 @@ def investigate(ai, topic: dict, out) -> dict:
     # Bound context to fit the 16GB PC; retain the complete retrieved articles locally.
     raw_facts=[];unknowns=[]
     for start in range(0,len(sources),2):
-        evidence=[{'id':s['id'],'title':s['title'],'published_at':s.get('published_at'),'url':s['url'],'text':s['text'][:4800]} for s in sources[start:start+2]]
+        evidence=[{'id':s['id'],'title':s['title'],'published_at':s.get('published_at'),'url':s['url'],'purpose':s.get('purpose','reporting'),'text':s['text'][:4800]} for s in sources[start:start+2]]
         schema={'type':'object','additionalProperties':False,'required':['facts','unknowns'],'properties':{
             'facts':{'type':'array','maxItems':12,'items':{'type':'object','additionalProperties':False,'required':['claim','evidence'],'properties':{
                 'claim':{'type':'string','maxLength':400},'evidence':{'type':'array','minItems':1,'maxItems':2,'items':{'type':'object','additionalProperties':False,'required':['source_id','quote'],'properties':{'source_id':{'type':'integer','enum':[x['id'] for x in evidence]},'quote':{'type':'string','minLength':20,'maxLength':220}}}}}}},
@@ -328,16 +352,23 @@ def investigate(ai, topic: dict, out) -> dict:
     facts = curate_facts(ai,topic,sources,validate_facts(raw_facts,sources))
     raw_facts=list(facts)
     save(out/'research_progress.json',{'curated':True,'supported_facts':facts})
+    targeted_added=False
     for attempt in range(2):
         if len(facts)>=cfg.get('target_facts',cfg['minimum_facts']):break
         try:
-            raw_facts.extend(additional_facts(ai,topic,sources,facts))
+            additions=additional_facts(ai,topic,sources,facts)
+            raw_facts.extend(additions)
+            targeted_added=targeted_added or bool(additions)
         except QualityBlocked as error:
             LOG.warning('Targeted evidence pass unavailable: %s',error)
             break
         facts=validate_facts(raw_facts,sources)
         save(out/'research_progress.json',{'targeted_passes':attempt+1,'supported_facts':facts})
         LOG.info('Targeted evidence pass %s: %s supported facts.',attempt+1,len(facts))
+    if targeted_added and len(facts)>=cfg['minimum_facts']:
+        # Later additions must not inflate the floor with paraphrases of old facts.
+        facts=curate_facts(ai,topic,sources,facts)
+        save(out/'research_progress.json',{'final_curated':True,'supported_facts':facts})
     if len(facts) < cfg['minimum_facts']:
         raise QualityBlocked(f'Only {len(facts)} facts had exact supporting evidence; at least {cfg["minimum_facts"]} required.')
     used_sources={e['source_id'] for fact in facts for e in fact['evidence']}
