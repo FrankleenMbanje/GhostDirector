@@ -1,0 +1,556 @@
+{
+  "date": "2026-10-22",
+  "prepared_by": "Codex",
+  "review_mode": "source-reviewed-editorial",
+  "topic_selection": "Automatically discovered from current corroborated publisher feeds; source-reviewed fallback for this date.",
+  "topic": {
+    "subject": "Dolly Parton",
+    "news_ids": [
+      4,
+      10,
+      13,
+      22,
+      52
+    ],
+    "headline": "Watch Carrie Underwood Close Dolly Parton Tribute Concert With ‘I Will Always Love You’",
+    "discovery": [
+      {
+        "id": 4,
+        "title": "Watch Carrie Underwood Close Dolly Parton Tribute Concert With ‘I Will Always Love You’",
+        "url": "https://www.rollingstone.com/music/music-country/carrie-underwood-sings-i-will-always-love-you-dolly-tribute-1235646179/",
+        "date": "2026-10-22T06:11:24+00:00"
+      },
+      {
+        "id": 10,
+        "title": "Zac Brown Delivers Emotional ‘Duet’ With Dolly Parton During Tribute Ceremony",
+        "url": "https://www.rollingstone.com/music/music-country/zac-brown-dolly-parton-duet-butterfly-tribute-concert-1235646266/",
+        "date": "2026-10-22T05:47:50+00:00"
+      },
+      {
+        "id": 13,
+        "title": "Dolly Parton CMA Tribute: Sabrina Carpenter, Julia Roberts, Oprah and More Remember the Country Icon as the ‘Great Unifier’",
+        "url": "https://variety.com/2026/music/news/cmas-celebration-of-dolly-parton-1236919337/",
+        "date": "2026-10-22T03:41:08+00:00"
+      },
+      {
+        "id": 22,
+        "title": "Ella Langley Pays Tribute to Dolly Parton With Smoldering Version of ‘Jolene’",
+        "url": "https://www.rollingstone.com/music/music-country/ella-langley-performs-jolene-dolly-parton-tribute-concert-1235646106/",
+        "date": "2026-10-22T01:56:26+00:00"
+      },
+      {
+        "id": 52,
+        "title": "The Country Music Association’s Dolly Parton Tribute Airs Tonight — Here’s How to Watch for Free",
+        "url": "https://www.rollingstone.com/product-recommendations/lifestyle/how-to-watch-dolly-parton-cma-tribute-special-live-free-stream-abc-1235646101/",
+        "date": "2026-10-21T22:00:00+00:00"
+      }
+    ],
+    "fingerprint": "aae68f25e954306f2966331928570da330005edd52e6a127b0cef0e596c03230"
+  },
+  "sources": [
+    {
+      "url": "https://www.rollingstone.com/music/music-country/carrie-underwood-sings-i-will-always-love-you-dolly-tribute-1235646179/",
+      "domain": "rollingstone.com",
+      "title": "Carrie Underwood Sings 'I Will Always Love You' at Dolly Parton Show",
+      "retrieved_at": "2026-10-22T09:21:24.729916+02:00",
+      "published_at": "2026-10-22",
+      "id": 1,
+      "purpose": "current reporting"
+    },
+    {
+      "url": "https://www.rollingstone.com/music/music-country/zac-brown-dolly-parton-duet-butterfly-tribute-concert-1235646266/",
+      "domain": "rollingstone.com",
+      "title": "Zac Brown 'Duets' With Dolly Parton on 'Butterfly' - Watch",
+      "retrieved_at": "2026-10-22T09:21:25.207654+02:00",
+      "published_at": "2026-10-22",
+      "id": 2,
+      "purpose": "current reporting"
+    },
+    {
+      "url": "https://variety.com/2026/music/news/cmas-celebration-of-dolly-parton-1236919337/",
+      "domain": "variety.com",
+      "title": "Dolly Parton CMA Tribute: Sabrina Carpenter, Julia Roberts Honor Her",
+      "retrieved_at": "2026-10-22T09:21:25.615149+02:00",
+      "published_at": "2026-10-22",
+      "id": 3,
+      "purpose": "current reporting"
+    },
+    {
+      "url": "https://www.rollingstone.com/music/music-country/ella-langley-performs-jolene-dolly-parton-tribute-concert-1235646106/",
+      "domain": "rollingstone.com",
+      "title": "Ella Langley Sings 'Jolene' at Dolly Parton Tribute Concert - WATCH",
+      "retrieved_at": "2026-10-22T09:21:26.072761+02:00",
+      "published_at": "2026-10-22",
+      "id": 4,
+      "purpose": "current reporting"
+    },
+    {
+      "url": "https://www.rollingstone.com/product-recommendations/lifestyle/how-to-watch-dolly-parton-cma-tribute-special-live-free-stream-abc-1235646101/",
+      "domain": "rollingstone.com",
+      "title": "Where to Watch the Dolly Parton Tribute Special Tonight Online for Free",
+      "retrieved_at": "2026-10-22T09:21:26.431092+02:00",
+      "published_at": "2026-10-21",
+      "id": 5,
+      "purpose": "current reporting"
+    },
+    {
+      "url": "https://variety.com/2026/shopping/news/how-to-watch-dolly-parton-tribute-special-cmas-live-online-1236916763/",
+      "domain": "variety.com",
+      "title": "How to Stream CMA's Dolly Parton Tribute Special Live Online",
+      "retrieved_at": "2026-10-22T09:21:27.553743+02:00",
+      "published_at": "2026-10-21",
+      "id": 6,
+      "purpose": "current reporting"
+    },
+    {
+      "url": "https://abcnews.com/GMA/Culture/dolly-parton-talks-career-fame-words/story?id=135950852",
+      "domain": "abcnews.com",
+      "title": "Dolly Parton talks career, fame and more in her own words - ABC News",
+      "retrieved_at": "2026-10-22T09:21:28.565054+02:00",
+      "published_at": null,
+      "id": 7,
+      "purpose": "reported background"
+    },
+    {
+      "url": "https://variety.com/2026/music/columns/interview-with-dolly-parton-tribute-i-will-always-love-you-1236843196/",
+      "domain": "variety.com",
+      "title": "My First Interview With Dolly Parton: Remembering the Country Queen",
+      "retrieved_at": "2026-10-22T09:21:29.818728+02:00",
+      "published_at": "2026-08-26",
+      "id": 8,
+      "purpose": "reported background"
+    },
+    {
+      "url": "https://www.bbc.com/news/articles/cpqpjv0j0eeo",
+      "domain": "bbc.com",
+      "title": "How Dolly Parton told her life story through six iconic songs",
+      "retrieved_at": "2026-10-22T09:21:32.759981+02:00",
+      "published_at": "2026-08-25",
+      "id": 9,
+      "purpose": "reported background"
+    },
+    {
+      "url": "https://www.bbc.com/culture/article/20201204-how-dolly-parton-became-the-worlds-best-loved-celebrity",
+      "domain": "bbc.com",
+      "title": "'Music is a great connector': How Dolly Parton became one of the world's best-loved stars",
+      "retrieved_at": "2026-10-22T09:21:40.284864+02:00",
+      "published_at": "2026-08-25",
+      "id": 10,
+      "purpose": "reported background"
+    }
+  ],
+  "facts": [
+    {
+      "id": 1,
+      "claim": "The tribute took place at Belmont University’s Fisher Center in Nashville.",
+      "evidence": [
+        {
+          "source_id": 2,
+          "quote": "Belmont University’s Fisher Center for the Performing Arts"
+        },
+        {
+          "source_id": 2,
+          "quote": "at Nashville’s Belmont University"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "claim": "The CMA tribute aired on October 21, 2026.",
+      "evidence": [
+        {
+          "source_id": 4,
+          "quote": "aired live on Oct. 21"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "claim": "Carrie Underwood closed the tribute with I Will Always Love You.",
+      "evidence": [
+        {
+          "source_id": 1,
+          "quote": "closed out the ABC broadcast"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "claim": "Parton died on August 25, 2026, aged 80.",
+      "evidence": [
+        {
+          "source_id": 5,
+          "quote": "died on Aug. 25 at the age of 80"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "claim": "Parton’s I Will Always Love You was a farewell to Porter Wagoner.",
+      "evidence": [
+        {
+          "source_id": 1,
+          "quote": "as a farewell to Porter Wagoner"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "claim": "Parton and Wagoner released thirteen duet albums.",
+      "evidence": [
+        {
+          "source_id": 1,
+          "quote": "released 13 duet albums"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "claim": "Parton and Wagoner won CMA Vocal Duo of the Year three times.",
+      "evidence": [
+        {
+          "source_id": 1,
+          "quote": "Vocal Duo of the Year three times"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "claim": "Whitney Houston recorded I Will Always Love You for the 1992 film The Bodyguard.",
+      "evidence": [
+        {
+          "source_id": 9,
+          "quote": "film, 1992's The Bodyguard"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "claim": "Zac Brown performed Butterfly with Parton’s prerecorded vocals at the tribute.",
+      "evidence": [
+        {
+          "source_id": 2,
+          "quote": "Parton’s prerecorded vocals"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "claim": "Butterfly featured their duet on Brown’s 2025 album Love & Fear.",
+      "evidence": [
+        {
+          "source_id": 2,
+          "quote": "on his 2025 album Love & Fear"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "claim": "Katy Perry introduced Ella Langley’s performance of the 1974 song Jolene.",
+      "evidence": [
+        {
+          "source_id": 4,
+          "quote": "introduction from Katy Perry"
+        },
+        {
+          "source_id": 4,
+          "quote": "her take on the 1974 hit"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "claim": "Langley had already performed Jolene at an Auburn, Alabama, concert after Parton’s death.",
+      "evidence": [
+        {
+          "source_id": 4,
+          "quote": "at her Auburn, Alabama, concert shortly after Parton’s death"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "claim": "Oprah sent a recorded tribute recalling their shared Tennessee roots.",
+      "evidence": [
+        {
+          "source_id": 3,
+          "quote": "We’re both Tennessee girls"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "claim": "Julia Roberts, Parton’s co-star in 1989’s Steel Magnolias, sent a recorded tribute.",
+      "evidence": [
+        {
+          "source_id": 3,
+          "quote": "in 1989’s “Steel Magnolias,”"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "claim": "Sabrina Carpenter had collaborated with Parton on a Please Please Please remix.",
+      "evidence": [
+        {
+          "source_id": 3,
+          "quote": "on a remix of “Please Please Please,”"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "claim": "Carol Burnett recalled meeting Parton on their 1979 television special.",
+      "evidence": [
+        {
+          "source_id": 3,
+          "quote": "the 1979 CBS television variety special"
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "claim": "Parton grew up in a one-room home in Tennessee, United States, with six brothers and five sisters.",
+      "evidence": [
+        {
+          "source_id": 10,
+          "quote": "one-room cabin on the banks of Tennessee's Little Pigeon River with six brothers and five sisters"
+        },
+        {
+          "source_id": 9,
+          "quote": "US singer-songwriter, actress and philanthropist"
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "claim": "Parton recorded her first single when she was thirteen.",
+      "evidence": [
+        {
+          "source_id": 10,
+          "quote": "recording her first single at 13"
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "claim": "Parton opened the Dollywood theme park in Tennessee in 1986.",
+      "evidence": [
+        {
+          "source_id": 7,
+          "quote": "Parton opened Dollywood, a theme park in her home state of Tennessee, in 1986"
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "claim": "In a 2019 interview, Parton recalled replacing advisers who had called the Dollywood venture a mistake.",
+      "evidence": [
+        {
+          "source_id": 7,
+          "quote": "making a big mistake"
+        },
+        {
+          "source_id": 7,
+          "quote": "started over with new people"
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "claim": "Parton founded the Imagination Library in 1995.",
+      "evidence": [
+        {
+          "source_id": 6,
+          "quote": "book-gifting initiative she founded in 1995"
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "claim": "The Imagination Library has distributed hundreds of millions of free books worldwide.",
+      "evidence": [
+        {
+          "source_id": 6,
+          "quote": "hundreds of millions of free books"
+        }
+      ]
+    },
+    {
+      "id": 23,
+      "claim": "Advance coverage said ticket proceeds were designated to benefit the Imagination Library.",
+      "evidence": [
+        {
+          "source_id": 5,
+          "quote": "ticket proceeds from the live show will benefit"
+        }
+      ]
+    },
+    {
+      "id": 24,
+      "claim": "Coat of Many Colors dates to 1971; Parton discussed its lessons about acceptance, love and parenting in Songteller.",
+      "evidence": [
+        {
+          "source_id": 9,
+          "quote": "her 1971 acoustic country-folk ditty"
+        },
+        {
+          "source_id": 9,
+          "quote": "bullying, acceptance, love and good parenting"
+        }
+      ]
+    },
+    {
+      "id": 25,
+      "claim": "Variety listed on-demand Hulu and Disney+ availability from October 22.",
+      "evidence": [
+        {
+          "source_id": 6,
+          "quote": "on demand on Hulu and Disney+ beginning Thursday, Oct. 22"
+        }
+      ]
+    }
+  ],
+  "script": {
+    "title": "Dolly Parton's CMA Tribute: Songs, Memories and Her Legacy",
+    "thumbnail_words": [
+      "STARS HONOR DOLLY",
+      "DOLLY REMEMBERED",
+      "HER MUSICAL LEGACY"
+    ],
+    "chapters": [
+      {
+        "heading": "The Nashville tribute",
+        "fact_ids": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "graphic_kind": "statement",
+        "graphic_headline": "DOLLY REMEMBERED",
+        "graphic_detail": "CMA tribute in Nashville, 21 October 2026",
+        "graphic_points": [],
+        "narration": "Carrie Underwood closed Dolly Parton's CMA tribute with I Will Always Love You. The special aired on ABC on October twenty-first, at a concert staged at Belmont University's Fisher Center in Nashville. Parton had died on August twenty-fifth at the age of eighty. This was an evening of other artists remembering her and performing her work. The photographs in this edit are licensed archive images of Parton. They illustrate her career, rather than depicting the October concert. Underwood's closing number also provides a way into the story behind the song: Parton originally wrote it as a farewell to Porter Wagoner. A composition tied to that professional relationship had become a way for another performer to honour its writer."
+      },
+      {
+        "heading": "The song behind the finale",
+        "fact_ids": [
+          5,
+          6,
+          7,
+          8
+        ],
+        "graphic_kind": "timeline",
+        "graphic_headline": "A SONG ACROSS DECADES",
+        "graphic_detail": "From a professional farewell to a film soundtrack",
+        "graphic_points": [
+          {
+            "label": "Original context",
+            "detail": "A farewell to Porter Wagoner"
+          },
+          {
+            "label": "1992 recording",
+            "detail": "Whitney Houston, The Bodyguard"
+          }
+        ],
+        "narration": "That original setting matters. Rolling Stone reports that Parton wrote the song as a farewell to Porter Wagoner, whose television show had helped establish her career. The two were regular duet partners. They released thirteen duet albums and won the Country Music Association's Vocal Duo of the Year award three times. Those achievements describe the working relationship behind the composition. Its first context was a career transition, with Parton using a song to address someone who had been an important collaborator. Another chapter came in nineteen ninety-two, when Whitney Houston recorded it for The Bodyguard soundtrack. The October tribute's closing choice therefore carried a substantial recording history. Parton's songwriting, her partnership with Wagoner, and Houston's later film recording all belong to that history. Underwood performed the composition at the Nashville celebration. Keeping the songwriter and the different recordings clearly identified gives each artist their place in the story of the same song."
+      },
+      {
+        "heading": "Two ways to revisit the music",
+        "fact_ids": [
+          9,
+          10,
+          11,
+          12
+        ],
+        "graphic_kind": "comparison",
+        "graphic_headline": "TWO PERFORMANCE FORMATS",
+        "graphic_detail": "An earlier recording and a live cover",
+        "graphic_points": [
+          {
+            "label": "Zac Brown",
+            "detail": "Butterfly with prerecorded Parton vocals"
+          },
+          {
+            "label": "Ella Langley",
+            "detail": "Jolene, introduced by Katy Perry"
+          }
+        ],
+        "narration": "Zac Brown's contribution used a different part of Parton's recording history. He performed Butterfly with her prerecorded vocals joining his live performance. Their duet had appeared on his twenty twenty-five album, Love and Fear. The reporting identifies the voice alongside Brown as an earlier recording, an important detail when describing a tribute held after Parton's death. Ella Langley returned to Jolene, with Katy Perry introducing her performance. Rolling Stone also reported that Langley had already sung the song at an Auburn, Alabama, concert after Parton's death. Her Nashville appearance revisited material she had previously used to honour Parton. These contributions used two distinct approaches. Brown performed alongside a recorded collaboration, while Langley interpreted a song from Parton's catalogue onstage. Describing those formats accurately preserves what each performer actually contributed. The shared connection was Parton's music, but the recordings and the live appearances each had their own documented context."
+      },
+      {
+        "heading": "The personal connections",
+        "fact_ids": [
+          13,
+          14,
+          15,
+          16
+        ],
+        "graphic_kind": "statement",
+        "graphic_headline": "PERSONAL CONNECTIONS",
+        "graphic_detail": "Collaborators remembered shared moments in their careers",
+        "graphic_points": [],
+        "narration": "Oprah appeared in a prerecorded message, recalling their shared Tennessee roots. Julia Roberts offered her own recorded tribute; she and Parton had acted together in nineteen eighty-nine's Steel Magnolias. Sabrina Carpenter's connection included their remix of Please Please Please. Carol Burnett recalled meeting Parton on the nineteen seventy-nine television special Dolly and Carol in Nashville. Four different relationships were being described: shared background, a film set, a musical collaboration, and a television production. These messages placed specific personal history alongside the concert performances. The speakers were remembering their own connections to Parton. Their contributions helped the programme bring together both the songs and the people who had worked with, or felt connected to, the artist being remembered."
+      },
+      {
+        "heading": "The career beyond one evening",
+        "fact_ids": [
+          17,
+          18,
+          19,
+          20,
+          24
+        ],
+        "graphic_kind": "timeline",
+        "graphic_headline": "A CAREER IN CONTEXT",
+        "graphic_detail": "Childhood recordings, songwriting and a Tennessee business",
+        "graphic_points": [
+          {
+            "label": "First single",
+            "detail": "Recorded at thirteen"
+          },
+          {
+            "label": "1971 song",
+            "detail": "Coat of Many Colors"
+          },
+          {
+            "label": "Dollywood",
+            "detail": "Opened in Tennessee in 1986"
+          }
+        ],
+        "narration": "That career had roots in a one-room home beside Tennessee's Little Pigeon River, where Parton grew up with six brothers and five sisters. BBC retrospective reporting also records that she made her first single at thirteen. The childhood setting remained part of her work as an adult. Her nineteen seventy-one song Coat of Many Colors drew on family life and growing up poor. In Songteller, she discussed the lessons it could convey about acceptance, love and parenting. By nineteen eighty-six, she had opened Dollywood in Tennessee. In a twenty nineteen ABC News interview, Parton recalled advisers warning that the project was a mistake. Her account was that she changed the people she worked with and continued with the plan. These are specific parts of the career remembered in the tribute coverage: childhood recordings, a song that reflected family experience, and a theme park she described defending to her advisers. Each has its own date or reported recollection, giving a fuller picture of her work beyond the concert stage."
+      },
+      {
+        "heading": "The books and the benefit",
+        "fact_ids": [
+          21,
+          22,
+          23,
+          25
+        ],
+        "graphic_kind": "statement",
+        "graphic_headline": "BOOKS AND A BENEFIT",
+        "graphic_detail": "Imagination Library, founded in 1995",
+        "graphic_points": [],
+        "narration": "The Nashville event also had a practical beneficiary: Parton's Imagination Library. Advance coverage cited ABC's announcement that ticket proceeds were designated for the programme. That describes the stated purpose of the fundraising; the cited concert reports do not provide a final sum raised. Variety dates the charity's founding to nineteen ninety-five and reports that it has distributed hundreds of millions of free books to children worldwide. The benefit was therefore connected to an existing book-gifting initiative that had already operated for decades. For viewers looking for the full CMA production, Variety listed on-demand availability on Hulu and Disney Plus from October twenty-second. The broadcast brought together performances of Parton's songs, personal recollections, and support for that reading programme. Those are the documented parts of this story. The reporting links and the credits for our licensed archive photographs are included in the description, so the performances, background and visual sources can each be followed separately."
+      }
+    ]
+  },
+  "unknowns": [
+    "The cited concert coverage does not report a final fundraising total."
+  ],
+  "map_requests": [
+    {
+      "name": "Tennessee",
+      "fact_id": 17
+    }
+  ],
+  "thumbnail_preferences": [
+    "commons:e23aa2d8a29f11d4effcd470",
+    "commons:ce1a28e1b1c7f2c1375fd73a",
+    "commons:c6f5fb39941d1ebf1a424828",
+    "commons:c5965579b985da6ecd311535"
+  ]
+}

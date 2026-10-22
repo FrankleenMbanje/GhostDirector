@@ -52,25 +52,33 @@ def accepted_license(name: str) -> bool:
 
     return value in {'cc0', 'cc0 1.0', 'public domain', 'pd', 'cc by 2.0', 'cc by 2.5', 'cc by 3.0', 'cc by 4.0'}
 
+def commons_original(title):
+    stem=re.sub(r'\.[A-Za-z0-9]{2,5}$','',title)
+    stem=re.sub(r'\s*\((?:cropped(?:square)?|crop)(?:\s*\d+)?\)(?:\s*\d+)?$','',stem,flags=re.IGNORECASE)
+    return 'commons:'+hashlib.sha256(' '.join(stem.casefold().split()).encode()).hexdigest()[:24]
+
+
 def candidates(subject: str, media_type: str) -> list[dict]:
 
-    response = requests.get(COMMONS, params={
-
-        'action': 'query', 'format': 'json', 'generator': 'search',
-
-        'gsrsearch': f'"{subject}" filetype:{media_type}', 'gsrnamespace': 6,
-
-        'gsrlimit': 35, 'prop': 'imageinfo|categories', 'cllimit': 'max',
-
-        'iiprop': 'url|size|extmetadata', 'iiurlwidth': 1920
-
-    }, headers={'User-Agent': USER_AGENT}, timeout=40)
-
-    response.raise_for_status()
+    pages={}
+    offset=0
+    # Keep each metadata batch below Commons' 50-imageinfo limit.
+    for _ in range(3):
+        response=requests.get(COMMONS,params={
+            'action':'query','format':'json','generator':'search',
+            'gsrsearch':f'"{subject}" filetype:{media_type}','gsrnamespace':6,
+            'gsrlimit':35,'gsroffset':offset,'prop':'imageinfo|categories','cllimit':'max',
+            'iiprop':'url|size|extmetadata','iiurlwidth':1920
+        },headers={'User-Agent':USER_AGENT},timeout=40)
+        response.raise_for_status();data=response.json()
+        pages.update(data.get('query',{}).get('pages',{}))
+        following=data.get('continue',{}).get('gsroffset')
+        if following is None:break
+        offset=following
 
     result = []
 
-    for page in response.json().get('query', {}).get('pages', {}).values():
+    for page in pages.values():
 
         info = (page.get('imageinfo') or [{}])[0]
 
@@ -80,7 +88,7 @@ def candidates(subject: str, media_type: str) -> list[dict]:
 
         license_name = field('LicenseShortName')
 
-        categories = ' '.join(x['title'] for x in page.get('categories', [])).casefold()
+        categories = (' '.join(x['title'] for x in page.get('categories', []))+' '+field('Categories')).casefold()
 
         if not accepted_license(license_name) or any(x in categories for x in ['deletion requests', 'no permission', 'watermark', 'copyright violations', 'disputed']):
 
@@ -108,7 +116,7 @@ def candidates(subject: str, media_type: str) -> list[dict]:
 
         original = re.search(r'(?:youtu\.be/|youtube\.com/watch\?v=)([\w-]{11})', credit)
 
-        result.append({'id': str(page['pageid']), 'origin_id': 'youtube:' + original[1] if original else 'commons:' + str(page['pageid']), 'kind': 'video' if media_type == 'video' else 'photo', 'role':'subject','provider':'commons','title': page['title'], 'subject': subject, 'url': url, 'source_page': info.get('descriptionurl', ''), 'creator': creator_credit(meta.get('Attribution',{}).get('value') or meta.get('Artist',{}).get('value','')), 'license': license_name, 'license_url': field('LicenseUrl'), 'archive_date': field('DateTimeOriginal') or field('DateTime'), 'description': field('ImageDescription')[:1800], 'size': info.get('size', 0)})
+        result.append({'id': str(page['pageid']), 'origin_id': 'youtube:' + original[1] if original else commons_original(page['title']), 'kind': 'video' if media_type == 'video' else 'photo', 'role':'subject','provider':'commons','title': page['title'], 'subject': subject, 'url': url, 'source_page': info.get('descriptionurl', ''), 'creator': creator_credit(meta.get('Attribution',{}).get('value') or meta.get('Artist',{}).get('value','')), 'license': license_name, 'license_url': field('LicenseUrl'), 'archive_date': field('DateTimeOriginal') or field('DateTime'), 'description': field('ImageDescription')[:1800], 'size': info.get('size', 0)})
 
     return result
 
