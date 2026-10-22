@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -78,13 +79,18 @@ class LocalAI:
                     for line in pull.iter_lines():
                         if not line:continue
                         item=json.loads(line)
-                        if item.get('error'):raise QualityBlocked(item['error'])
+                        if item.get('error'):
+                            error=str(item['error'])
+                            if re.search(r'\b(?:429|500|502|503|504)\b',error) or any(t in error.lower() for t in ['upstream connect error','connection reset','temporary failure','connection termination','timed out','unexpected eof']):
+                                raise requests.ConnectionError('Temporary model registry error: '+error)
+                            raise QualityBlocked(error)
                         percent=int(item.get('completed',0)/item['total']*100) if item.get('total') else 0
                         if percent//10>last:
                             last=percent//10;LOG.info('Model %s transfer: %s%%',model,percent)
                 return
             except requests.RequestException:
                 if attempt==2:raise
+                LOG.warning('Model registry transfer interrupted; retry %s/2.',attempt+1)
                 ensure_server()
                 time.sleep(5)
         raise QualityBlocked('Local model download is still incomplete.')
