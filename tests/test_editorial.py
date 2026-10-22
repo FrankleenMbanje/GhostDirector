@@ -70,7 +70,7 @@ class ArchivePaginationTests(unittest.TestCase):
         from unittest.mock import Mock
         from local_studio.media import candidates
         def page(identity,marked=False):
-            return {'pageid':identity,'title':'File:Portrait '+str(identity)+'.jpg','imageinfo':[{'url':'https://upload.wikimedia.org/example/'+str(identity)+'.jpg','size':1000,'width':2000,'height':1400,'descriptionurl':'https://commons.wikimedia.org/wiki/File:Portrait_'+str(identity)+'.jpg','extmetadata':{'LicenseShortName':{'value':'CC BY 2.0'},'Artist':{'value':'Photographer'},'Categories':{'value':'Images with watermarks' if marked else 'Portrait photographs'}}}]}
+            return {'pageid':identity,'title':'File:Jane Doe Portrait '+str(identity)+'.jpg','imageinfo':[{'url':'https://upload.wikimedia.org/example/'+str(identity)+'.jpg','size':1000,'width':2000,'height':1400,'descriptionurl':'https://commons.wikimedia.org/wiki/File:Portrait_'+str(identity)+'.jpg','extmetadata':{'LicenseShortName':{'value':'CC BY 2.0'},'Artist':{'value':'Photographer'},'Categories':{'value':'Images with watermarks' if marked else 'Portrait photographs'}}}]}
         first=Mock();first.json.return_value={'query':{'pages':{'1':page(1),'2':page(2,True)}},'continue':{'gsroffset':35}}
         second=Mock();second.json.return_value={'query':{'pages':{'3':page(3)}}}
         with patch('local_studio.media.requests.get',side_effect=[first,second]) as request:
@@ -82,11 +82,18 @@ class ArchivePaginationTests(unittest.TestCase):
 class CandidateSupplyTests(unittest.TestCase):
     def test_six_crops_of_one_photo_do_not_warrant_full_research(self):
         from local_studio.media import candidate_supply
-        rows=[{'origin_id':'same-photo'} for _ in range(6)]
+        rows=[{'kind':'photo','origin_id':'same-photo'} for _ in range(6)]
         with patch('local_studio.media.candidates',side_effect=[rows,[]]):
             result=candidate_supply({'subject':'Jane Doe','headline':'Jane Doe update'})
         self.assertFalse(result['eligible_to_research'])
         self.assertEqual(result['photo_original_candidates'],1)
+
+    def test_four_photos_and_two_clips_are_potential_hybrid_candidates(self):
+        from local_studio.media import candidate_supply
+        photos=[{'kind':'photo','origin_id':'p'+str(i)} for i in range(4)]
+        videos=[{'kind':'video','role':'subject','origin_id':'v'+str(i)} for i in range(2)]
+        with patch('local_studio.media.candidates',side_effect=[photos,videos]):
+            self.assertTrue(candidate_supply({'subject':'Jane Doe','headline':'Jane Doe update'})['eligible_to_research'])
 
     def test_candidate_count_is_not_a_completed_visual_screen(self):
         from local_studio.media import candidate_supply
@@ -99,7 +106,49 @@ class CandidateSupplyTests(unittest.TestCase):
         self.assertEqual(archive.call_count,1)
 
 
+class HybridEditTests(unittest.TestCase):
+    def test_four_photos_and_two_video_originals_produce_a_varied_hybrid(self):
+        from local_studio.edit import plan_shots
+        assets=[{'id':'p'+str(i),'origin_id':'photo'+str(i),'kind':'photo','path':'fixture.jpg'} for i in range(4)]
+        assets += [{'id':'v'+str(i),'origin_id':'video'+str(i),'kind':'video','role':'subject','duration':300,'path':'fixture.mp4'} for i in range(2)]
+        timing={'duration':360,'chapters':[{'index':i,'start':i*60,'end':(i+1)*60} for i in range(6)],'cues':[]}
+        shots=plan_shots(assets,{},timing)
+        self.assertTrue(all(s['mode']=='hybrid' for s in shots))
+        self.assertGreaterEqual(sum(s['duration'] for s in shots if s['kind']=='video'),360*.3)
+        self.assertEqual(len({s['origin_id'] for s in shots if s['kind']!='graphic'}),6)
+        self.assertTrue(all(s['source_start']>=15 for s in shots if s['kind']=='video'))
+        self.assertEqual(sum(s['frames'] for s in shots),360*30)
+        assets[-1]['origin_id']='video0'
+        with self.assertRaises(QualityBlocked):plan_shots(assets,{},timing)
+
+    def test_detected_brands_and_printed_likenesses_are_rejected(self):
+        from local_studio.media import usable_subject
+        verdict={'subject_present':True,'real_subject_in_scene':True,'subject_is_primary_focus':True,'identity_confidence':.95,'publisher_or_stock_brand_visible':False,'brand_text':[],'faces_framed_well':True,'clear_usable_picture':True,'uncertain':False}
+        self.assertTrue(usable_subject(verdict))
+        self.assertFalse(usable_subject({**verdict,'brand_text':['WWE']}))
+        self.assertFalse(usable_subject({**verdict,'real_subject_in_scene':False}))
+        self.assertFalse(usable_subject({**verdict,'subject_is_primary_focus':False}))
+
+
 class NarrationDeadlineTests(unittest.IsolatedAsyncioTestCase):
+    async def test_incomplete_chapter_retries_before_audio_is_cached(self):
+        from unittest.mock import AsyncMock
+        from local_studio.voice import narrate_edge,IncompleteNarration
+        words=[{'start':0,'end':.5,'word':'One'},{'start':.5,'end':1,'word':'sentence'}]
+        with tempfile.TemporaryDirectory() as directory,patch('local_studio.voice.collect_edge_stream',new=AsyncMock(side_effect=[([b'partial'],words[:1]),*[( [b'complete'],words) for _ in range(6)]])) as stream,patch('local_studio.voice.duration',return_value=60),patch('local_studio.voice.command'),patch('local_studio.voice.asyncio.sleep',new=AsyncMock()):
+            out=Path(directory)
+            timing=await narrate_edge({'chapters':[{'narration':'One sentence.'} for _ in range(6)]},out)
+            self.assertEqual(timing['duration'],360)
+            self.assertEqual(stream.await_count,7)
+            self.assertEqual((out/'voice_parts/01.mp3').read_bytes(),b'complete')
+            self.assertEqual(list(out.rglob('*.partial.mp3')),[])
+
+    def test_timing_must_cover_the_entire_source_not_just_a_prefix(self):
+        from local_studio.voice import complete_word_timing
+        words=[{'word':'Low'},{'word':'security'},{'word':'prison'}]
+        self.assertTrue(complete_word_timing(words,'Low-security prison.'))
+        self.assertFalse(complete_word_timing(words[:-1],'Low-security prison.'))
+
     async def test_partial_stream_is_not_accepted_after_deadline(self):
         class Stalled:
             async def stream(self):

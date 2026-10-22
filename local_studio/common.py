@@ -78,3 +78,11 @@ def setup_logging() -> None:
     handlers=[logging.FileHandler(OUTPUT/'daily.log',encoding='utf-8')]
     if sys.stderr is not None:handlers.append(logging.StreamHandler())
     logging.basicConfig(level=logging.INFO,format='%(asctime)s %(message)s',handlers=handlers)
+
+
+def hybrid_sources(assets,cfg=None):
+    cfg=cfg or settings()
+    photos={a['origin_id'] for a in assets if a['kind']=='photo'}
+    photos.update(a['second_photo_origin'] for a in assets if a.get('second_photo_origin'))
+    videos={a['origin_id'] for a in assets if a['kind']=='video' and a.get('role','subject')=='subject'}
+    return cfg.get('allow_hybrid_edit',False) and len(photos)>=cfg.get('minimum_hybrid_photo_originals',4) and len(videos)>=cfg.get('minimum_hybrid_video_originals',2) and len(photos|videos)>=cfg.get('minimum_hybrid_visual_originals',6)
