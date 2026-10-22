@@ -23,7 +23,7 @@ class LocalInferenceTests(unittest.TestCase):
         self.assertEqual(payload['model'],'qwen2.5:7b-instruct')
         self.assertIs(payload['think'],False)
         self.assertIs(payload['stream'],True)
-        self.assertEqual(post.call_args.kwargs['timeout'],(15,180))
+        self.assertEqual(post.call_args.kwargs['timeout'],(15,900))
 
     def test_images_use_explicit_instruct_vision_model(self):
         response=self.response([{'message':{'content':'{"ok":true}'},'done':True}])
