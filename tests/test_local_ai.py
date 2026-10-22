@@ -15,6 +15,22 @@ class LocalInferenceTests(unittest.TestCase):
         response.iter_lines.return_value=[json.dumps(c).encode() for c in chunks]
         return response
 
+    def test_registry_stream_503_retries_but_unknown_model_fails(self):
+        from unittest.mock import MagicMock,patch
+        from local_studio.ai import LocalAI
+        from local_studio.common import QualityBlocked
+        def response(payload):
+            item=MagicMock();item.__enter__.return_value=item
+            item.iter_lines.return_value=[__import__('json').dumps(payload).encode()]
+            return item
+        with patch('local_studio.ai.space_check'),patch('local_studio.ai.ensure_server'),patch('local_studio.ai.time.sleep'),patch('local_studio.ai.requests.post',side_effect=[response({'error':'pull model manifest: 503: upstream connect error'}),response({'status':'success'})]) as post:
+            LocalAI()._pull('qwen2.5:7b-instruct')
+            self.assertEqual(post.call_count,2)
+        with patch('local_studio.ai.space_check'),patch('local_studio.ai.requests.post',return_value=response({'error':'model manifest does not exist'})) as post:
+            with self.assertRaisesRegex(QualityBlocked,'does not exist'):
+                LocalAI()._pull('qwen2.5:7b-instruct')
+            self.assertEqual(post.call_count,1)
+
     def test_streamed_text_uses_small_text_model_with_thinking_off(self):
         response=self.response([{'message':{'content':'{"ok":'}},{'message':{'content':'true}'},'done':True}])
         with patch('local_studio.ai.requests.post',return_value=response) as post:
