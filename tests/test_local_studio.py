@@ -13,6 +13,20 @@ from local_studio.voice import phrases, wrap, align_source_words, merge_orphan_c
 
 
 class ProductionPolicyTests(unittest.TestCase):
+    def test_cpu_inference_allows_prompt_evaluation_but_keeps_total_budget(self):
+        import json
+        response=Mock()
+        response.__enter__=Mock(return_value=response)
+        response.__exit__=Mock(return_value=False)
+        response.iter_lines.return_value=[json.dumps({'message':{'content':'{"ok":true}'},'done':True}).encode()]
+        with patch('local_studio.ai.requests.post',return_value=response) as post, patch('local_studio.ai.time.monotonic',side_effect=[0,0,301,301,302]):
+            self.assertEqual(LocalAI().json('A research prompt',tokens=20),{'ok':True})
+        self.assertEqual(post.call_args.kwargs['timeout'],(15,900))
+        response.iter_lines.return_value=[b'{"message":{"content":"{}"},"done":true}']
+        with patch('local_studio.ai.requests.post',return_value=response), patch('local_studio.ai.time.monotonic',side_effect=[0,1201,1201,1201,1201]):
+            with self.assertRaisesRegex(QualityBlocked,'twenty-minute'):
+                LocalAI().json('A stalled request',tokens=20)
+
     def test_corroborated_roster_supplies_multiple_topics_without_single_model_choice(self):
         rows=[('Charli XCX cancels Arizona concert','https://variety.com/charli'),('Charli XCX loses voice','https://billboard.com/charli'),('Charli XCX show canceled','https://deadline.com/charli'),('Taylor Swift announces album','https://variety.com/taylor'),('Taylor Swift album update','https://billboard.com/taylor'),('Julia Stiles recalls tribute','https://variety.com/julia'),('Julia Stiles tribute interview','https://deadline.com/julia')]
         feed=[{'title':title,'url':url,'date':now().isoformat(),'summary':''} for title,url in rows]

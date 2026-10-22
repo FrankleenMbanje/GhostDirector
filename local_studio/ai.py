@@ -115,7 +115,9 @@ class LocalAI:
             ], 'options': {'temperature': 0.2, 'num_ctx': 8192, 'num_predict': tokens, 'num_thread': min(4,os.cpu_count() or 4), 'repeat_penalty':1.12, 'repeat_last_n':128}
         }
         content=[];data={}
-        with requests.post(self.url+'/api/chat',json=payload,stream=True,timeout=(15,180)) as response:
+        # CPU prompt evaluation emits no stream bytes. A 4k-token research prompt
+        # takes over four minutes on the standard free runner before generation.
+        with requests.post(self.url+'/api/chat',json=payload,stream=True,timeout=(15,900)) as response:
             response.raise_for_status()
             for line in response.iter_lines(chunk_size=1):
                 if not line:continue
@@ -123,7 +125,7 @@ class LocalAI:
                 if data.get('error'):raise QualityBlocked('Local inference failed: '+data['error'])
                 content.append(data.get('message',{}).get('content',''))
                 elapsed=time.monotonic()-started
-                if elapsed>600:raise QualityBlocked('Local inference exceeded its ten-minute request budget.')
+                if elapsed>1200:raise QualityBlocked('Local inference exceeded its twenty-minute request budget.')
                 if time.monotonic()-heartbeat>30:
                     LOG.info('AI working: %s; %.0f seconds; %s output characters',model,elapsed,sum(map(len,content)))
                     heartbeat=time.monotonic()
