@@ -132,6 +132,16 @@ class ProductionPolicyTests(unittest.TestCase):
         other='https://example.com/file.jpg?utm_source=required'
         self.assertEqual(canonical_media_url(other),other)
 
+    def test_quote_support_recovers_source_punctuation_without_changing_words(self):
+        from local_studio.research import literal_support
+        source='Jane Doe announced a sold-out concert, in Nashville, on Wednesday.'
+        quote='Jane Doe announced a sold out concert in Nashville on Wednesday.'
+        self.assertEqual(literal_support(quote,source),source.rstrip('.'))
+        self.assertIsNone(literal_support('He announced the next concert on Wednesday.','She announced the next concert on Wednesday.'))
+        self.assertIsNone(literal_support('The jury found the defendant guilty.','The jury found the defendant not guilty.'))
+        self.assertIsNone(literal_support('The price was 1,500 dollars.','The price was 1.500 dollars.'))
+        self.assertIsNone(literal_support('The ticket price was 15 dollars.','The ticket price was 1.5 dollars.'))
+
     def test_fact_floor_is_checked_after_curation_of_late_additions(self):
         from pathlib import Path
         from local_studio.research import investigate

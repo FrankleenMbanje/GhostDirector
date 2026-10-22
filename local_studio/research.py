@@ -209,6 +209,20 @@ def fetch_article(url: str) -> dict | None:
         return None
 
 
+def literal_support(quote, text):
+    """Recover the source's own punctuation, with exact whole-word support."""
+    words=re.findall(r'\w+',quote)
+    if not words:return None
+    match=re.search(r'(?<!\w)'+r'\W+'.join(re.escape(w) for w in words)+r'(?!\w)',text,re.IGNORECASE)
+    if not match:return None
+    # Decimal and thousands separators can change numeric meaning.
+    numbers=lambda value:re.findall(r'\d+(?:[.,]\d+)*',value)
+    if numbers(quote)!=numbers(match.group(0)):return None
+    # Keep exact copied quotes intact; otherwise store the actual matched source text.
+    found=quote if quote in text else match.group(0)
+    return found if 20<=len(found)<=220 else None
+
+
 def validate_facts(facts: list, sources: list) -> list:
     source_map = {s['id']: s for s in sources}
     result = []
@@ -220,8 +234,9 @@ def validate_facts(facts: list, sources: list) -> list:
         for support in evidence:
             sid = support.get('source_id')
             quote = support.get('quote', '')
-            if sid in source_map and 20 <= len(quote) <= 220 and normalized(quote) in normalized(source_map[sid]['text']):
-                good.append({'source_id': sid, 'quote': quote})
+            supported=literal_support(quote,source_map[sid]['text']) if sid in source_map and isinstance(quote,str) and 20<=len(quote)<=220 else None
+            if supported:
+                good.append({'source_id': sid, 'quote': supported})
         key = normalized(claim)
         tokens=set(key.split())
         near_duplicate=any(len(tokens & set(old.split())) / max(1,len(tokens | set(old.split()))) > .82 for old in seen)
