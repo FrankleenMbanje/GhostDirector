@@ -77,7 +77,7 @@ def cached_research(topic,out):
     return research
 
 
-def daily(research_only=False,continue_research=False):
+def daily(research_only=False,continue_research=False,editorial_package=None):
     setup_logging()
     OUTPUT.mkdir(parents=True,exist_ok=True)
     try:
@@ -105,6 +105,10 @@ def daily(research_only=False,continue_research=False):
             history_path=OUTPUT/'history.json'
             history=json.loads(history_path.read_text()) if history_path.exists() else []
             state('running','Researching','Searching current celebrity reporting and comparing stories.')
+            bundle=None
+            if editorial_package:
+                from .editorial import load_package
+                bundle=load_package(editorial_package)
             selected=None
             if continue_research:
                 marker=json.loads((OUTPUT/'runs'/day/'research_ready.json').read_text(encoding='utf-8'))
@@ -115,7 +119,7 @@ def daily(research_only=False,continue_research=False):
                 if not any(t['fingerprint']==selected for t in candidates):raise QualityBlocked('Research continuation topic is missing.')
                 candidates.sort(key=lambda t:t['fingerprint']!=selected)
             else:
-                candidates=discover(ai,[x['title'] for x in history])
+                candidates=[bundle['topic']] if bundle else discover(ai,[x['title'] for x in history])
                 save(OUTPUT/'runs'/day/'trend_candidates.json',candidates)
             failures=[]
             for topic in candidates:
@@ -125,7 +129,13 @@ def daily(research_only=False,continue_research=False):
                 out.mkdir(parents=True,exist_ok=True)
                 try:
                     state('running','Researching',topic['headline'],project=str(out))
-                    research=cached_research(topic,out) if continue_research and topic['fingerprint']==selected else investigate(ai,topic,out)
+                    if continue_research and topic['fingerprint']==selected:
+                        research=cached_research(topic,out)
+                    elif bundle:
+                        from .editorial import prepare_research
+                        research=prepare_research(bundle,out)
+                    else:
+                        research=investigate(ai,topic,out)
                     if research_only:
                         save(OUTPUT/'runs'/day/'research_ready.json',{'fingerprint':topic['fingerprint'],'github_run_id':os.environ.get('GITHUB_RUN_ID')})
                         state('research_complete','Research saved','Supported sources and facts saved; no video was produced.',project=str(out))
@@ -133,15 +143,22 @@ def daily(research_only=False,continue_research=False):
                     state('running','Checking visuals','Finding multiple clean licensed video originals and genuine photographs.',project=str(out))
                     assets=acquire(ai,topic,out,research)
                     state('running','Writing','Building a substantive long-form explanation from the documented facts.',project=str(out))
-                    script=write_script(ai,research,out)
+                    if bundle:
+                        from .editorial import prepared_script
+                        script=prepared_script(bundle,research,out)
+                    else:
+                        script=write_script(ai,research,out)
                     from .geography import prepare_maps
-                    prepare_maps(ai,research,script,out)
+                    prepare_maps(ai,research,script,out,preferred_places=bundle.get('map_requests') if bundle else None)
                     state('running','Narrating','Generating the approved voice and measuring its real running time.',project=str(out))
                     timing=narrate(script,out)
                     state('running','Editing','Assembling varied footage, original graphics and timed captions.',project=str(out))
                     final=render(script,assets,timing,out)
                     state('running','Thumbnails','Composing three clean thumbnail options locally.',project=str(out))
                     photos=[a for a in assets if a['kind']=='photo']
+                    if bundle and bundle.get('thumbnail_preferences'):
+                        preferred=bundle['thumbnail_preferences']
+                        photos.sort(key=lambda a:preferred.index(a['origin_id']) if a['origin_id'] in preferred else len(preferred))
                     thumbnails=create_variants(script,Path(photos[0]['path']),out/'thumbnails')
                     credits(assets,out)
                     result={'title':script['title'],'video':str(final),'thumbnails':[str(x) for x in thumbnails],'project':str(out),'duration_seconds':timing['duration'],'fingerprint':topic['fingerprint'],'review_required':True,'uploaded':False}
@@ -172,6 +189,7 @@ def main():
     parser.add_argument('--doctor',action='store_true')
     parser.add_argument('--research-only',action='store_true')
     parser.add_argument('--continue-research',action='store_true')
+    parser.add_argument('--editorial-package',help='Explicit dated package inside editorial/; scheduled runs research automatically.')
     parser.add_argument('--dashboard',action='store_true')
     parser.add_argument('--schedule-loop',action='store_true')
     args=parser.parse_args()
@@ -184,7 +202,7 @@ def main():
     if args.doctor:
         result=doctor();save(OUTPUT/'doctor.json',result);print(json.dumps(result,indent=2));return 0 if result['ready'] else 2
     if args.daily or args.research_only:
-        return daily(args.research_only,args.continue_research)
+        return daily(args.research_only,args.continue_research,args.editorial_package)
     parser.print_help()
     return 0
 

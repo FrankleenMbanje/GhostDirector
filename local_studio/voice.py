@@ -76,6 +76,17 @@ def narrate(script: dict,out: Path) -> dict:
     return narrate_kokoro(script,out)
 
 
+async def collect_edge_stream(communicator,timeout_seconds=180):
+    parts=[];words=[]
+    # Websocket keepalives must not leave a chapter waiting indefinitely.
+    async with asyncio.timeout(timeout_seconds):
+        async for item in communicator.stream():
+            if item['type']=='audio':parts.append(item['data'])
+            elif item['type']=='WordBoundary':words.append({'start':item['offset']/1e7,'end':(item['offset']+item['duration'])/1e7,'word':html.unescape(item['text'])})
+    if not parts or not words:raise QualityBlocked('Narration or timing was not returned; no silent voice fallback.')
+    return parts,words
+
+
 async def narrate_edge(script: dict,out: Path) -> dict:
     import edge_tts
     import aiohttp
@@ -93,10 +104,7 @@ async def narrate_edge(script: dict,out: Path) -> dict:
                 connector=aiohttp.TCPConnector(family=socket.AF_INET) if attempt else None
                 try:
                     communicator=edge_tts.Communicate(chapter['narration'],voice=cfg['voice'],rate=cfg.get('voice_rate','-4%'),boundary='WordBoundary',connector=connector,connect_timeout=20,receive_timeout=90)
-                    async for item in communicator.stream():
-                        if item['type']=='audio':parts.append(item['data'])
-                        elif item['type']=='WordBoundary':words.append({'start':item['offset']/1e7,'end':(item['offset']+item['duration'])/1e7,'word':html.unescape(item['text'])})
-                    if not parts or not words:raise QualityBlocked('Narration or timing was not returned; no silent voice fallback.')
+                    parts,words=await collect_edge_stream(communicator)
                     target.write_bytes(b''.join(parts))
                     save(cache,{'key':key,'audio_sha256':hashlib.sha256(target.read_bytes()).hexdigest(),'words':words})
                     break

@@ -8,9 +8,9 @@ from .common import LOG,OUTPUT,QualityBlocked,save
 from .research import mentions
 
 
-def prepare_maps(ai,research,script,out):
+def prepare_maps(ai,research,script,out,preferred_places=None):
     try:
-        answer=ai.json('Select up to two useful geographic locations explicitly written in these supported claims. Prefer the city/state of the current update. Return {"places":[{"name":"exact written place name","fact_id":integer}]}. No guessed addresses, inferred travel or invented venues.\n'+json.dumps(research['facts']),tokens=500)
+        answer={'places':preferred_places} if preferred_places is not None else ai.json('Select up to two useful geographic locations explicitly written in these supported claims. Prefer the city/state of the current update. Return {"places":[{"name":"exact written place name","fact_id":integer}]}. No guessed addresses, inferred travel or invented venues.\n'+json.dumps(research['facts']),tokens=500)
         facts={f['id']:f['claim'] for f in research['facts']}
         cache=OUTPUT/'geocodes.json'
         stored=json.loads(cache.read_text(encoding='utf-8')) if cache.exists() else {}

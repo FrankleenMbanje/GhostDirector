@@ -2,6 +2,12 @@ name: Fame Files daily video (unlisted)
 
 on:
   workflow_dispatch:
+    inputs:
+      editorial_package:
+        description: Optional committed editorial package for today; schedules research automatically
+        required: false
+        type: string
+        default: ''
   schedule:
     # 12:00 UTC = 14:00 South Africa. GitHub can delay scheduled jobs.
     - cron: '0 12 * * *'
@@ -24,6 +30,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 350
     env:
+      FAME_EDITORIAL_PACKAGE: ${{ inputs.editorial_package }}
       PYTHONUNBUFFERED: '1'
       FAME_CHROME_EXECUTABLE: /usr/bin/google-chrome
       OLLAMA_VERSION: '0.40.7'
@@ -83,7 +90,10 @@ jobs:
         run: python -m local_studio.ai
       - name: Research current story and verify its evidence
         if: steps.channel_check.outputs.already_published != 'true'
-        run: python -m local_studio --daily --research-only
+        run: |
+          args=()
+          if [ -n "$FAME_EDITORIAL_PACKAGE" ]; then args+=(--editorial-package "$FAME_EDITORIAL_PACKAGE"); fi
+          python -m local_studio --daily --research-only "${args[@]}"
       - name: Prepare research checkpoint
         if: steps.channel_check.outputs.already_published != 'true'
         env:
@@ -99,7 +109,10 @@ jobs:
           compression-level: 6
       - name: Screen visuals, write narration and render the video
         if: steps.channel_check.outputs.already_published != 'true'
-        run: python -m local_studio --daily --continue-research
+        run: |
+          args=()
+          if [ -n "$FAME_EDITORIAL_PACKAGE" ]; then args+=(--editorial-package "$FAME_EDITORIAL_PACKAGE"); fi
+          python -m local_studio --daily --continue-research "${args[@]}"
       - name: Upload checked video as unlisted only
         if: steps.channel_check.outputs.already_published != 'true'
         env:
